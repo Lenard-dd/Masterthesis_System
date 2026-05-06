@@ -4,3 +4,17 @@ log/
 devel/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+*.log
+*.egg-info/
+.vscode/
+.env
+.idea/
+.DS_Store
+dist/

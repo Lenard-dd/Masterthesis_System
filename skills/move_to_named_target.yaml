@@ -1,0 +1,13 @@
+skill_id: "move_to_named_target"
+name: "Move to Named Target"
+description: "Move the robot arm to a predefined named position"
+parameters:
+  - name: "target_name"
+    type: "string"
+    required: true
+    allowed_values: ["home", "pickup", "place"]
+preconditions: []
+effects:
+  - "robot_at_target"
+execution:
+  backend_method: "move_to_named_target"

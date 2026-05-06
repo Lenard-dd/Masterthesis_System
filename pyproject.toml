@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-skill-robot"
+version = "0.1.0"
+description = "LLM-based skill composition and human-in-the-loop validation system for UR5 robot"
+authors = [
+    {name = "Your Name", email = "qzf2000416@gmail.com"},
+]
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0",
+    "PyYAML>=6.0",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["llm_skill_robot*"]
+
+[tool.setuptools.package-data]
+"llm_skill_robot" = ["config/*.yaml", "skills/*.yaml"]
