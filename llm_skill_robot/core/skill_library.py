@@ -2,26 +2,17 @@ import yaml
 from typing import Dict, List, Optional
 from pathlib import Path
 from .skill import Skill
+from ..utils import get_skills_dir
 
 
 class SkillLibrary:
-    def __init__(self, skills_dir: str = "skills"):
-        self.skills_dir = self._resolve_skills_dir(skills_dir)
+    def __init__(self, skills_dir: str = None):
+        if skills_dir is None:
+            self.skills_dir = get_skills_dir()
+        else:
+            self.skills_dir = Path(skills_dir)
         self.skills: Dict[str, Skill] = {}
         self.load_skills()
-
-    def _resolve_skills_dir(self, skills_dir: str) -> Path:
-        path = Path(skills_dir)
-        if path.exists():
-            return path
-
-        if skills_dir == "skills":
-            package_root = Path(__file__).resolve().parents[1]
-            package_skills = package_root / "skills"
-            if package_skills.exists():
-                return package_skills
-
-        return path
 
     def load_skills(self):
         """Load all skill definitions from YAML files in the skills directory."""

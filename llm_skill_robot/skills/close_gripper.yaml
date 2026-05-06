@@ -1,9 +1,0 @@
-skill_id: "close_gripper"
-name: "Close Gripper"
-description: "Close the robot gripper"
-parameters: []
-preconditions: []
-effects:
-  - "gripper_closed"
-execution:
-  backend_method: "close_gripper"

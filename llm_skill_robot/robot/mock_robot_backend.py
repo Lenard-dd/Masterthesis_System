@@ -84,3 +84,23 @@ class MockRobotBackend(BaseRobotBackend):
                 "gripper_open": self.gripper_open
             }
         }
+
+    def get_robot_state(self):
+        """Get the current mock robot state."""
+        return {
+            "current_named_target": self.current_named_target,
+            "gripper_open": self.gripper_open,
+            "held_object": self.held_object,
+        }
+
+    def list_named_targets(self):
+        """List available named targets."""
+        return list(self.known_named_targets)
+
+    def stop_motion(self, **kwargs):
+        """Stop current motion."""
+        return {
+            "success": True,
+            "message": "Motion stopped.",
+            "output": {}
+        }

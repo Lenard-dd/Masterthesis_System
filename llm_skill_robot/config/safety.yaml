@@ -1,5 +1,0 @@
-# Safety configuration
-safety_limits:
-  max_velocity: 0.5  # m/s
-  max_acceleration: 1.0  # m/s^2
-  forbidden_zones: []

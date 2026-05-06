@@ -42,6 +42,18 @@ source install/setup.bash
 ros2 run llm_skill_robot llm-skill-demo
 ```
 
+## Read UR5 Joint State
+
+Read the current UR5 joint state from `/joint_states` without sending any robot commands:
+
+```bash
+cd ~/dev_ws
+source /opt/ros/humble/setup.zsh
+colcon build --packages-select llm_skill_robot --symlink-install
+source install/setup.zsh
+ros2 run llm_skill_robot ros-get-ur5-state
+```
+
 ## Mock Execution Pipeline
 
 This demo uses a pure Python mock execution pipeline:
