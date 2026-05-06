@@ -1,5 +1,5 @@
-from pydantic import BaseModel
-from typing import List, Optional
+from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Literal, Optional
 from enum import Enum
 
 
@@ -10,8 +10,8 @@ class VerificationDecision(str, Enum):
 
 class VerificationResult(BaseModel):
     decision: VerificationDecision
-    reasons: List[str] = []
-    warnings: List[str] = []
+    reasons: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
 
 
 class ValidationDecision(str, Enum):
@@ -23,3 +23,18 @@ class ValidationDecision(str, Enum):
 class ValidationResult(BaseModel):
     decision: ValidationDecision
     comments: Optional[str] = None
+
+
+class StepExecutionResult(BaseModel):
+    step_id: int
+    skill_id: str
+    status: Literal["SUCCESS", "FAILED", "SKIPPED"]
+    message: str
+    output: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecutionReport(BaseModel):
+    task: str
+    status: Literal["SUCCESS", "FAILED", "NOT_EXECUTED"]
+    step_results: List[StepExecutionResult] = Field(default_factory=list)
+    summary: str
