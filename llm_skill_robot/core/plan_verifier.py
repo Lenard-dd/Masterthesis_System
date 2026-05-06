@@ -9,8 +9,21 @@ from .schemas import VerificationResult, VerificationDecision
 class PlanVerifier:
     def __init__(self, skill_library: SkillLibrary, config_dir: str = "config"):
         self.skill_library = skill_library
-        self.config_dir = Path(config_dir)
+        self.config_dir = self._resolve_config_dir(config_dir)
         self.robot_capabilities = self.load_robot_capabilities()
+
+    def _resolve_config_dir(self, config_dir: str) -> Path:
+        path = Path(config_dir)
+        if path.exists():
+            return path
+
+        if config_dir == "config":
+            package_root = Path(__file__).resolve().parents[1]
+            package_config = package_root / "config"
+            if package_config.exists():
+                return package_config
+
+        return path
 
     def load_robot_capabilities(self) -> Dict[str, Any]:
         """Load robot capabilities from config."""

@@ -3,7 +3,7 @@ import datetime
 from pathlib import Path
 from typing import Any, Dict
 from .plan import RobotPlan
-from .schemas import VerificationResult, ValidationResult
+from .schemas import VerificationResult, ValidationResult, ExecutionReport
 
 
 class AuditLogger:
@@ -36,6 +36,16 @@ class AuditLogger:
             "event": "plan_validated",
             "plan_task": plan.task,
             "validation_result": result.model_dump()
+        }
+        self._write_entry(entry)
+
+    def log_execution_report(self, report: ExecutionReport):
+        """Log an execution report."""
+        entry = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "event": "plan_executed",
+            "task": report.task,
+            "execution_report": report.model_dump()
         }
         self._write_entry(entry)
 

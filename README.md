@@ -20,13 +20,38 @@ Run the test suite:
 pytest
 ```
 
-## Demo
+## Pure Python Demo
 
-Run the CLI demo:
+Run the CLI demo in a Python virtual environment:
 
 ```bash
+source .venv/bin/activate
+pytest
 python -m llm_skill_robot.main_cli
 ```
+
+## ROS 2 Demo
+
+Run the package as an ament_python node from a ROS 2 Humble workspace:
+
+```bash
+cd ~/dev_ws
+source /opt/ros/humble/setup.bash
+colcon build --packages-select llm_skill_robot --symlink-install
+source install/setup.bash
+ros2 run llm_skill_robot llm-skill-demo
+```
+
+## Mock Execution Pipeline
+
+This demo uses a pure Python mock execution pipeline:
+
+- skills are defined in YAML and loaded by `SkillLibrary`
+- `PlanVerifier` checks each step for required parameters and allowed values
+- `HumanValidator` prompts for approval before execution
+- `MockRobotBackend` simulates robot state and skill execution
+- `ExecutionManager` runs steps and produces an `ExecutionReport`
+- `ExecutionEvaluator` summarizes whether the task succeeded
 
 ## Project Structure
 

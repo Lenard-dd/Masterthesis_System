@@ -1,0 +1,9 @@
+skill_id: "open_gripper"
+name: "Open Gripper"
+description: "Open the robot gripper"
+parameters: []
+preconditions: []
+effects:
+  - "gripper_open"
+execution:
+  backend_method: "open_gripper"

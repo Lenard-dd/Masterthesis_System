@@ -6,6 +6,9 @@ from llm_skill_robot.core.plan import RobotPlan, PlanStep
 from llm_skill_robot.core.plan_verifier import PlanVerifier
 from llm_skill_robot.core.human_validator import HumanValidator
 from llm_skill_robot.core.audit_logger import AuditLogger
+from llm_skill_robot.robot.mock_robot_backend import MockRobotBackend
+from llm_skill_robot.core.execution_manager import ExecutionManager
+from llm_skill_robot.core.execution_evaluator import ExecutionEvaluator
 
 
 def main():
@@ -14,6 +17,9 @@ def main():
     plan_verifier = PlanVerifier(skill_library)
     human_validator = HumanValidator()
     audit_logger = AuditLogger()
+    robot_backend = MockRobotBackend()
+    execution_manager = ExecutionManager(skill_library, robot_backend, audit_logger=audit_logger)
+    evaluator = ExecutionEvaluator()
 
     # Create a hardcoded example plan
     plan = RobotPlan(
@@ -39,18 +45,21 @@ def main():
             ),
             PlanStep(
                 step_id="4",
-                skill_id="move_to_named_target",
-                description="Move to place position",
-                parameters={"target_name": "place"}
-            ),
-            PlanStep(
-                step_id="5",
                 skill_id="place_object",
                 description="Place the object",
-                parameters={}
+                parameters={"object_id": "cube_1"}
             )
         ]
     )
+
+    # Show skill library and plan
+    print("Available skills:")
+    for skill_id in skill_library.list_skills():
+        print(f"- {skill_id}")
+
+    print("\nGenerated plan:")
+    for step in plan.steps:
+        print(f"{step.step_id}. {step.skill_id} - {step.description} {step.parameters}")
 
     # Log plan generation
     audit_logger.log_plan_generation(plan)
@@ -59,22 +68,38 @@ def main():
     verification_result = plan_verifier.verify_plan(plan)
     audit_logger.log_verification(plan, verification_result)
 
-    print(f"Plan verification: {verification_result.decision}")
+    print(f"\nPlan verification: {verification_result.decision}")
     if verification_result.reasons:
         print("Reasons:", verification_result.reasons)
     if verification_result.warnings:
         print("Warnings:", verification_result.warnings)
 
+    validation_result = None
     if verification_result.decision == "ALLOW":
-        # Present to human validator
         validation_result = human_validator.validate_plan(plan)
         audit_logger.log_validation(plan, validation_result)
-
-        print(f"Human validation: {validation_result.decision}")
+        print(f"\nHuman validation: {validation_result.decision}")
         if validation_result.comments:
             print(f"Comments: {validation_result.comments}")
     else:
-        print("Plan blocked by verification. Cannot proceed to human validation.")
+        print("\nPlan blocked by verification. Cannot proceed to human validation.")
+
+    execution_report = None
+    evaluation_result = None
+    if verification_result.decision == "ALLOW" and validation_result and validation_result.decision == "APPROVE":
+        execution_report = execution_manager.execute_plan(plan, verification_result, validation_result)
+        evaluation_result = evaluator.evaluate(plan, execution_report)
+
+        print("\nExecution:")
+        for step_result in execution_report.step_results:
+            print(f"Step {step_result.step_id} {step_result.skill_id}: {step_result.status}")
+
+        print("\nEvaluation:")
+        print(f"Task success: {str(evaluation_result['task_success']).lower()}")
+        print(f"Summary: {evaluation_result['summary']}")
+
+    if execution_report and audit_logger:
+        audit_logger.log_execution_report(execution_report)
 
 
 if __name__ == "__main__":
