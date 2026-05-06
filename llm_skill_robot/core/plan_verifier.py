@@ -24,8 +24,9 @@ class PlanVerifier:
                 return yaml.safe_load(f)
         return {}
 
-    def verify_plan(self, plan: RobotPlan) -> VerificationResult:
+    def verify_plan(self, plan: RobotPlan, context: Dict[str, Any] = None) -> VerificationResult:
         """Verify a robot plan against skills and capabilities."""
+        context = context or {}
         reasons = []
         warnings = []
 
@@ -53,6 +54,12 @@ class PlanVerifier:
         # For now, just check if there are any capabilities defined
         if not self.robot_capabilities:
             warnings.append("No robot capabilities loaded")
+
+        robot_state = context.get("robot_state")
+        if robot_state:
+            status = robot_state.get("status", {})
+            if not status.get("joint_state_received", False):
+                warnings.append(status.get("message", "Robot state context has no joint state."))
 
         decision = VerificationDecision.BLOCK if reasons else VerificationDecision.ALLOW
         return VerificationResult(decision=decision, reasons=reasons, warnings=warnings)

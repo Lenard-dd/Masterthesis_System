@@ -91,3 +91,39 @@ def test_invalid_allowed_value():
     result = verifier.verify_plan(plan)
     assert result.decision == VerificationDecision.BLOCK
     assert any("Invalid value 'invalid_target'" in reason for reason in result.reasons)
+
+
+def test_verify_plan_accepts_robot_state_context():
+    """Test verification can receive read-only robot state context."""
+    library = SkillLibrary()
+    verifier = PlanVerifier(library)
+
+    plan = RobotPlan(
+        task="Test task with context",
+        steps=[
+            PlanStep(
+                step_id="1",
+                skill_id="move_to_named_target",
+                description="Move to home",
+                parameters={"target_name": "home"}
+            )
+        ]
+    )
+    context = {
+        "robot_state": {
+            "robot": "ur5",
+            "joint_positions": {},
+            "joint_velocities": {},
+            "joint_efforts": {},
+            "ee_pose": None,
+            "status": {
+                "joint_state_received": False,
+                "message": "No /joint_states message received."
+            }
+        }
+    }
+
+    result = verifier.verify_plan(plan, context=context)
+
+    assert result.decision == VerificationDecision.ALLOW
+    assert "No /joint_states message received." in result.warnings

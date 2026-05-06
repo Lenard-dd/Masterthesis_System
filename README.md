@@ -54,6 +54,18 @@ source install/setup.zsh
 ros2 run llm_skill_robot ros-get-ur5-state
 ```
 
+## ROS Verification Demo
+
+Read the current UR5 joint state and verify a hardcoded plan without moving the robot:
+
+```bash
+cd ~/dev_ws
+source /opt/ros/humble/setup.zsh
+colcon build --packages-select llm_skill_robot --symlink-install
+source install/setup.zsh
+ros2 run llm_skill_robot ros-verify-demo
+```
+
 ## Mock Execution Pipeline
 
 This demo uses a pure Python mock execution pipeline:
