@@ -1,0 +1,14 @@
+home:
+  shoulder_pan_joint: 0.0
+  shoulder_lift_joint: -1.5708
+  elbow_joint: 1.5708
+  wrist_1_joint: -1.5708
+  wrist_2_joint: -1.5708
+  wrist_3_joint: 0.0
+observe:
+  shoulder_pan_joint: 0.0
+  shoulder_lift_joint: -1.2
+  elbow_joint: 1.4
+  wrist_1_joint: -1.57
+  wrist_2_joint: -1.57
+  wrist_3_joint: 0.0

@@ -25,13 +25,23 @@ class TrajectoryValidator:
         summary_data = self._as_dict(summary)
         reasons = []
         warnings = []
-        is_dry_run = bool(summary_data.get("trajectory_preview", {}).get("dry_run", False))
+        preview = summary_data.get("trajectory_preview", {})
+        is_dry_run = bool(preview.get("dry_run", False))
+        is_rviz_sim_target_command = (
+            bool(preview.get("pymoveit2_target_command", False))
+            and preview.get("mode") == "rviz_sim"
+        )
 
         if not summary_data.get("success", False):
             reasons.append("Motion plan summary indicates planning failed.")
 
         num_points = summary_data.get("num_trajectory_points", 0)
-        if not is_dry_run and num_points <= 0:
+        if is_rviz_sim_target_command and num_points <= 0:
+            warnings.append(
+                "No explicit trajectory preview available; pymoveit2 will execute target command "
+                "in RViz/fake hardware only after final confirmation."
+            )
+        elif not is_dry_run and num_points <= 0:
             reasons.append("Motion plan has no trajectory points.")
 
         max_joint_delta = summary_data.get("max_joint_delta_rad")

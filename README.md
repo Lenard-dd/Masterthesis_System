@@ -40,6 +40,8 @@ source .venv/bin/activate
 python -m llm_skill_robot.moveit_plan_demo
 ```
 
+`pymoveit2` is the preferred MoveIt Python interface for ROS 2 Humble demos in this project.
+
 ## ROS 2 Demo
 
 Run the package as an ament_python node from a ROS 2 Humble workspace:
@@ -70,6 +72,16 @@ source /opt/ros/humble/setup.zsh
 colcon build --packages-select llm_skill_robot --symlink-install
 source install/setup.zsh
 ros2 run llm_skill_robot ros-moveit-plan-only-demo
+```
+
+Run the RViz/fake-hardware simulated execution demo:
+
+```bash
+cd ~/dev_ws
+source /opt/ros/humble/setup.zsh
+colcon build --packages-select llm_skill_robot --symlink-install
+source install/setup.zsh
+ros2 run llm_skill_robot ros-rviz-sim-execution-demo
 ```
 
 ## Read UR5 Joint State

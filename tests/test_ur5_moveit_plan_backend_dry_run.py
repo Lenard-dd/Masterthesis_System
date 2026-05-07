@@ -1,5 +1,19 @@
 from llm_skill_robot.core.schemas import MotionPlanCacheEntry
+from llm_skill_robot.core.trajectory_validator import TrajectoryValidator
+from llm_skill_robot.robot.ur5_moveit_plan_backend import PYMOVEIT2_UNAVAILABLE_MESSAGE
 from llm_skill_robot.robot.ur5_moveit_plan_backend import UR5MoveItPlanBackend
+
+
+class Pymoveit2UnavailableBackend(UR5MoveItPlanBackend):
+    def _pymoveit2_interface_available(self) -> bool:
+        self._pymoveit2_error = PYMOVEIT2_UNAVAILABLE_MESSAGE
+        return False
+
+
+class Pymoveit2NoPlanApiBackend(UR5MoveItPlanBackend):
+    def _pymoveit2_interface_available(self) -> bool:
+        self._moveit2 = object()
+        return True
 
 
 def test_plan_to_named_target_returns_success_in_dry_run_mode():
@@ -60,3 +74,38 @@ def test_plan_to_pose_returns_success_in_dry_run_mode():
     assert result["summary"]["target_pose"]["frame"] == "base_link"
     assert result["summary"]["target_pose"]["position"]["x"] == 0.4
     assert result["plan_id"] in backend.plan_cache
+
+
+def test_pymoveit2_unavailable_returns_clear_failure():
+    backend = Pymoveit2UnavailableBackend(dry_run=False, node=object())
+
+    result = backend.plan_to_named_target("home")
+
+    assert result["success"] is False
+    assert result["message"] == PYMOVEIT2_UNAVAILABLE_MESSAGE
+
+
+def test_pymoveit2_no_plan_api_caches_target_command_for_rviz_sim():
+    backend = Pymoveit2NoPlanApiBackend(
+        dry_run=False,
+        node=object(),
+        mode="rviz_sim",
+        execution_config={
+            "mode": "rviz_sim",
+            "allow_real_robot_execution": False,
+            "require_human_confirmation": True,
+            "require_final_confirmation_before_execution": True,
+            "allowed_execution_modes": ["dry_run", "plan_only", "rviz_sim"],
+        },
+    )
+
+    result = backend.plan_to_named_target("home")
+    validation = TrajectoryValidator({}).validate_motion_plan_summary(result["summary"])
+
+    assert result["success"] is True
+    assert result["summary"]["num_trajectory_points"] == 0
+    assert result["summary"]["trajectory_preview"]["pymoveit2_target_command"] is True
+    assert result["plan_id"] in backend.plan_cache
+    assert result["plan_id"] in backend._raw_plan_cache
+    assert validation["decision"] == "ALLOW"
+    assert "No explicit trajectory preview available" in validation["warnings"][0]
