@@ -327,6 +327,13 @@ class UR5MoveItPlanBackend:
         plan_id = self._new_plan_id()
         plan_result = self._call_pymoveit2_plan_api(target_positions)
         if plan_result is None:
+            plan_result = self._request_moveit_plan_service(
+                target_positions=target_positions,
+                velocity_scale=velocity_scale,
+                acceleration_scale=acceleration_scale,
+            )
+
+        if plan_result is None:
             if self.execution_mode != "rviz_sim":
                 return self._failure_result(
                     target_type="named_target",
@@ -358,10 +365,74 @@ class UR5MoveItPlanBackend:
             skill_id=kwargs.get("skill_id", "move_to_named_target"),
             step_id=kwargs.get("step_id"),
             raw_plan_available=summary.success,
+            raw_trajectory=self._extract_robot_trajectory(plan_result),
+            trajectory_start=self._extract_trajectory_start(plan_result),
         )
         if summary.success:
-            self._raw_plan_cache[summary.plan_id] = plan_result
+            self._raw_plan_cache[summary.plan_id] = {
+                "type": "pymoveit2_joint_trajectory",
+                "joint_trajectory": self._extract_joint_trajectory(plan_result),
+            }
         return self._result_from_entry(entry)
+
+    def _request_moveit_plan_service(
+        self,
+        target_positions,
+        velocity_scale: float,
+        acceleration_scale: float,
+    ):
+        """Request a MoveIt plan via /plan_kinematic_path without executing it."""
+        if self.node is None or not hasattr(self.node, "create_client"):
+            return None
+
+        try:
+            import rclpy
+            from moveit_msgs.msg import Constraints, JointConstraint
+            from moveit_msgs.srv import GetMotionPlan
+        except Exception as e:
+            self._pymoveit2_error = f"MoveIt planning service types are not available: {e}"
+            return None
+
+        try:
+            client = self.node.create_client(GetMotionPlan, "/plan_kinematic_path")
+            if not client.wait_for_service(timeout_sec=2.0):
+                self._pymoveit2_error = "MoveIt planning service /plan_kinematic_path is not available."
+                return None
+
+            request = GetMotionPlan.Request()
+            motion_request = request.motion_plan_request
+            motion_request.group_name = self.planning_group
+            motion_request.num_planning_attempts = 1
+            motion_request.allowed_planning_time = 5.0
+            motion_request.max_velocity_scaling_factor = float(velocity_scale)
+            motion_request.max_acceleration_scaling_factor = float(acceleration_scale)
+
+            goal_constraints = Constraints()
+            for joint_name, joint_position in zip(self.joint_names, target_positions):
+                joint_constraint = JointConstraint()
+                joint_constraint.joint_name = joint_name
+                joint_constraint.position = float(joint_position)
+                joint_constraint.tolerance_above = 0.001
+                joint_constraint.tolerance_below = 0.001
+                joint_constraint.weight = 1.0
+                goal_constraints.joint_constraints.append(joint_constraint)
+            motion_request.goal_constraints.append(goal_constraints)
+
+            future = client.call_async(request)
+            rclpy.spin_until_future_complete(self.node, future, timeout_sec=10.0)
+            if not future.done():
+                self._pymoveit2_error = "Timed out waiting for MoveIt planning service response."
+                return None
+
+            response = future.result()
+            if response is None:
+                self._pymoveit2_error = "MoveIt planning service returned no response."
+                return None
+
+            return response.motion_plan_response
+        except Exception as e:
+            self._pymoveit2_error = f"MoveIt planning service request failed: {e}"
+            return None
 
     def _call_pymoveit2_plan_api(self, target_positions):
         """Use a pymoveit2 plan-only API if this environment exposes one."""
@@ -414,6 +485,12 @@ class UR5MoveItPlanBackend:
             skill_id=skill_id,
             step_id=step_id,
             raw_plan_available=False,
+            target_command={
+                "type": "pymoveit2_target_command",
+                "target_name": target,
+                "joint_positions": list(target_positions),
+                "joint_positions_by_name": joint_positions_by_name,
+            },
         )
         self._raw_plan_cache[plan_id] = {
             "type": "pymoveit2_target_command",
@@ -503,7 +580,10 @@ class UR5MoveItPlanBackend:
     def _execute_plan_in_rviz_sim(self, plan_id: str) -> Dict[str, Any]:
         """Execute only a backend-cached MoveIt plan in simulated execution mode."""
         cached_command = self._raw_plan_cache[plan_id]
-        if cached_command.get("type") == "pymoveit2_target_command":
+        if (
+            isinstance(cached_command, dict)
+            and cached_command.get("type") == "pymoveit2_target_command"
+        ):
             if not hasattr(self._moveit2, "move_to_configuration"):
                 raise RuntimeError("pymoveit2 MoveIt2 object has no move_to_configuration method.")
             self._moveit2.move_to_configuration(cached_command["joint_positions"])
@@ -513,6 +593,23 @@ class UR5MoveItPlanBackend:
                 "simulated_execution": True,
                 "command_type": "pymoveit2_target_command",
                 "target_name": cached_command["target_name"],
+            }
+
+        if (
+            isinstance(cached_command, dict)
+            and cached_command.get("type") == "pymoveit2_joint_trajectory"
+        ):
+            joint_trajectory = cached_command.get("joint_trajectory")
+            if joint_trajectory is None:
+                raise RuntimeError("Cached plan has no JointTrajectory for pymoveit2 execution.")
+            if not hasattr(self._moveit2, "execute"):
+                raise RuntimeError("pymoveit2 MoveIt2 object has no execute method.")
+            self._moveit2.execute(joint_trajectory)
+            if hasattr(self._moveit2, "wait_until_executed"):
+                self._moveit2.wait_until_executed()
+            return {
+                "simulated_execution": True,
+                "command_type": "pymoveit2_joint_trajectory",
             }
 
         if hasattr(self._moveit2, "execute"):
@@ -550,6 +647,26 @@ class UR5MoveItPlanBackend:
             max_velocity_abs=self._max_velocity_abs(points),
             trajectory_preview=self._trajectory_preview(points),
         )
+
+    @staticmethod
+    def _extract_robot_trajectory(plan_result):
+        trajectory = getattr(plan_result, "trajectory", None)
+        if trajectory is not None:
+            return trajectory
+        return getattr(plan_result, "planned_trajectory", None)
+
+    @classmethod
+    def _extract_joint_trajectory(cls, plan_result):
+        robot_trajectory = cls._extract_robot_trajectory(plan_result)
+        if robot_trajectory is not None:
+            return getattr(robot_trajectory, "joint_trajectory", None)
+        if hasattr(plan_result, "joint_names") and hasattr(plan_result, "points"):
+            return plan_result
+        return None
+
+    @staticmethod
+    def _extract_trajectory_start(plan_result):
+        return getattr(plan_result, "trajectory_start", None)
 
     def _failure_result(
         self,
@@ -590,6 +707,9 @@ class UR5MoveItPlanBackend:
         skill_id: str,
         step_id: Optional[int] = None,
         raw_plan_available: bool = False,
+        raw_trajectory=None,
+        trajectory_start=None,
+        target_command: Optional[Dict[str, Any]] = None,
     ) -> MotionPlanCacheEntry:
         entry = MotionPlanCacheEntry(
             plan_id=summary.plan_id,
@@ -598,6 +718,9 @@ class UR5MoveItPlanBackend:
             summary=summary,
             created_at=datetime.now(timezone.utc).isoformat(),
             raw_plan_available=raw_plan_available,
+            raw_trajectory=raw_trajectory,
+            trajectory_start=trajectory_start,
+            target_command=target_command,
         )
         self.plan_cache[entry.plan_id] = entry
         return entry

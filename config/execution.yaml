@@ -2,6 +2,9 @@ execution:
   mode: plan_only
   allow_real_robot_execution: false
   require_human_confirmation: true
+  require_trajectory_review: true
+  enable_visual_trajectory_preview: true
+  visual_preview_topic: /display_planned_path
   require_final_confirmation_before_execution: true
   allowed_execution_modes:
     - dry_run

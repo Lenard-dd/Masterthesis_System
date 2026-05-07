@@ -17,6 +17,7 @@ class ExecutionModeConfig(BaseModel):
     mode: ExecutionMode = "plan_only"
     allow_real_robot_execution: bool = False
     require_human_confirmation: bool = True
+    require_trajectory_review: bool = True
     require_final_confirmation_before_execution: bool = True
     allowed_execution_modes: List[ExecutionMode] = Field(
         default_factory=lambda: ["dry_run", "plan_only", "rviz_sim"]

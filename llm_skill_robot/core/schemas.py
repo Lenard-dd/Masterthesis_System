@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, Dict, List, Literal, Optional
 from enum import Enum
 
@@ -57,9 +57,14 @@ class MotionPlanSummary(BaseModel):
 
 
 class MotionPlanCacheEntry(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     plan_id: str
     skill_id: str
     step_id: Optional[int] = None
     summary: MotionPlanSummary
     created_at: str
     raw_plan_available: bool = False
+    raw_trajectory: Optional[Any] = None
+    trajectory_start: Optional[Any] = None
+    target_command: Optional[Dict[str, Any]] = None

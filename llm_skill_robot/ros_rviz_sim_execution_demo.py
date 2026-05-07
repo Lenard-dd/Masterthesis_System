@@ -12,7 +12,9 @@ from llm_skill_robot.core.plan import PlanStep, RobotPlan
 from llm_skill_robot.core.plan_verifier import PlanVerifier
 from llm_skill_robot.core.schemas import ValidationDecision
 from llm_skill_robot.core.skill_library import SkillLibrary
+from llm_skill_robot.core.trajectory_reviewer import TrajectoryReviewer
 from llm_skill_robot.core.trajectory_validator import TrajectoryValidator
+from llm_skill_robot.core.trajectory_visualizer import TrajectoryVisualizer
 from llm_skill_robot.robot.ur5_moveit_plan_backend import UR5MoveItPlanBackend
 from llm_skill_robot.utils import get_config_dir
 
@@ -35,8 +37,8 @@ def _create_plan() -> RobotPlan:
                 description="Plan and simulate moving to home",
                 parameters={
                     "target": "home",
-                    "velocity_scale": 0.1,
-                    "acceleration_scale": 0.1,
+                    "velocity_scale": 0.03,
+                    "acceleration_scale": 0.03,
                 },
             )
         ],
@@ -108,6 +110,7 @@ def main():
         plan_verifier = PlanVerifier(skill_library)
         human_validator = HumanValidator()
         trajectory_validator = TrajectoryValidator(safety_config)
+        trajectory_reviewer = TrajectoryReviewer()
         audit_logger = AuditLogger()
 
         plan = _create_plan()
@@ -138,8 +141,8 @@ def main():
         step = plan.steps[0]
         plan_result = backend.plan_to_named_target(
             target=step.parameters["target"],
-            velocity_scale=step.parameters.get("velocity_scale", 0.1),
-            acceleration_scale=step.parameters.get("acceleration_scale", 0.1),
+            velocity_scale=step.parameters.get("velocity_scale", 0.03),
+            acceleration_scale=step.parameters.get("acceleration_scale", 0.03),
             skill_id=step.skill_id,
             step_id=int(step.step_id),
         )
@@ -162,8 +165,62 @@ def main():
             print("\nTrajectory validation blocked simulated execution.")
             return
 
+        _audit_event(
+            audit_logger,
+            "trajectory_review_shown",
+            {"plan_id": plan_result["plan_id"]},
+        )
+        review_approved = trajectory_reviewer.ask_for_review_approval(plan_result["summary"])
+        _audit_event(
+            audit_logger,
+            "trajectory_review_approved",
+            {
+                "plan_id": plan_result["plan_id"],
+                "approved": review_approved,
+            },
+        )
+        if not review_approved:
+            print("\nTrajectory review was not approved. No execution requested.")
+            return
+
+        if execution_config.get("enable_visual_trajectory_preview", True):
+            preview_topic = execution_config.get(
+                "visual_preview_topic",
+                "/display_planned_path",
+            )
+            trajectory_visualizer = TrajectoryVisualizer(node=node, topic=preview_topic)
+            cached_plan = backend.get_plan(plan_result["plan_id"])
+            preview_result = trajectory_visualizer.publish_preview(cached_plan)
+            _audit_event(
+                audit_logger,
+                "visual_trajectory_preview",
+                {
+                    "plan_id": plan_result["plan_id"],
+                    "preview_result": preview_result,
+                },
+            )
+
+            print("\nVisual Trajectory Preview:")
+            if preview_result["success"]:
+                print(preview_result["message"])
+                print("Please inspect the planned trajectory in RViz before final confirmation.")
+            else:
+                print("No raw trajectory available. Please rely on textual trajectory review and MoveIt/RViz planning display.")
+        else:
+            print("\nVisual Trajectory Preview:")
+            print("Visual trajectory preview is disabled by execution config.")
+
+        print("\nFinal Confirmation:")
         choice = input("\nExecute this plan in RViz/fake hardware only? [y/N] ").strip()
         final_confirmed = choice.lower() == "y"
+        _audit_event(
+            audit_logger,
+            "final_execution_confirmed",
+            {
+                "plan_id": plan_result["plan_id"],
+                "confirmed": final_confirmed,
+            },
+        )
         if not final_confirmed:
             print("\nFinal confirmation was not provided. No execution requested.")
             return

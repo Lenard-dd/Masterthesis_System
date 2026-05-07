@@ -6,6 +6,18 @@ parameters:
     type: "string"
     required: true
     allowed_values: ["home", "pickup", "place"]
+  - name: "velocity_scale"
+    type: "float"
+    required: false
+    default: 0.03
+    min_value: 0.0
+    max_value: 0.1
+  - name: "acceleration_scale"
+    type: "float"
+    required: false
+    default: 0.03
+    min_value: 0.0
+    max_value: 0.1
 preconditions: []
 effects:
   - "robot_at_target"

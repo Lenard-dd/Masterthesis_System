@@ -15,6 +15,9 @@ class Parameter(BaseModel):
     type: ParameterType
     required: bool = False
     allowed_values: Optional[List[Any]] = None
+    default: Optional[Any] = None
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
 
 
 class Execution(BaseModel):

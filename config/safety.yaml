@@ -4,6 +4,10 @@ safety_limits:
   max_acceleration: 1.0  # m/s^2
   forbidden_zones: []
 trajectory_limits:
-  max_joint_delta_rad: 0.5
-  max_velocity_abs: 1.0
+  max_joint_delta_rad: 3.14
+  max_velocity_abs: 0.5
   min_duration_sec: 0.1
+execution:
+  require_trajectory_review: true
+  require_final_confirmation_before_execution: true
+  allow_real_robot_execution: false
