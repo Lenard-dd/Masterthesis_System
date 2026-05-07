@@ -62,6 +62,16 @@ source install/setup.zsh
 ros2 run llm_skill_robot moveit-plan-demo
 ```
 
+Run the real MoveIt plan-only demo without executing robot motion:
+
+```bash
+cd ~/dev_ws
+source /opt/ros/humble/setup.zsh
+colcon build --packages-select llm_skill_robot --symlink-install
+source install/setup.zsh
+ros2 run llm_skill_robot ros-moveit-plan-only-demo
+```
+
 ## Read UR5 Joint State
 
 Read the current UR5 joint state from `/joint_states` without sending any robot commands:

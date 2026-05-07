@@ -3,3 +3,7 @@ safety_limits:
   max_velocity: 0.5  # m/s
   max_acceleration: 1.0  # m/s^2
   forbidden_zones: []
+trajectory_limits:
+  max_joint_delta_rad: 0.5
+  max_velocity_abs: 1.0
+  min_duration_sec: 0.1
