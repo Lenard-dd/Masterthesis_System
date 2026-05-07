@@ -84,6 +84,8 @@ source install/setup.zsh
 ros2 run llm_skill_robot ros-rviz-sim-execution-demo
 ```
 
+After you approve the text trajectory review, the demo attempts to publish a visual trajectory preview to RViz on `/display_planned_path`. You must still inspect RViz and give the final confirmation before any RViz/fake-hardware simulated execution is requested.
+
 ## Read UR5 Joint State
 
 Read the current UR5 joint state from `/joint_states` without sending any robot commands:

@@ -358,6 +358,7 @@ class UR5MoveItPlanBackend:
             skill_id=kwargs.get("skill_id", "move_to_named_target"),
             step_id=kwargs.get("step_id"),
             raw_plan_available=summary.success,
+            raw_trajectory=self._extract_robot_trajectory(plan_result),
         )
         if summary.success:
             self._raw_plan_cache[summary.plan_id] = plan_result
@@ -414,6 +415,12 @@ class UR5MoveItPlanBackend:
             skill_id=skill_id,
             step_id=step_id,
             raw_plan_available=False,
+            target_command={
+                "type": "pymoveit2_target_command",
+                "target_name": target,
+                "joint_positions": list(target_positions),
+                "joint_positions_by_name": joint_positions_by_name,
+            },
         )
         self._raw_plan_cache[plan_id] = {
             "type": "pymoveit2_target_command",
@@ -503,7 +510,10 @@ class UR5MoveItPlanBackend:
     def _execute_plan_in_rviz_sim(self, plan_id: str) -> Dict[str, Any]:
         """Execute only a backend-cached MoveIt plan in simulated execution mode."""
         cached_command = self._raw_plan_cache[plan_id]
-        if cached_command.get("type") == "pymoveit2_target_command":
+        if (
+            isinstance(cached_command, dict)
+            and cached_command.get("type") == "pymoveit2_target_command"
+        ):
             if not hasattr(self._moveit2, "move_to_configuration"):
                 raise RuntimeError("pymoveit2 MoveIt2 object has no move_to_configuration method.")
             self._moveit2.move_to_configuration(cached_command["joint_positions"])
@@ -551,6 +561,13 @@ class UR5MoveItPlanBackend:
             trajectory_preview=self._trajectory_preview(points),
         )
 
+    @staticmethod
+    def _extract_robot_trajectory(plan_result):
+        trajectory = getattr(plan_result, "trajectory", None)
+        if trajectory is not None:
+            return trajectory
+        return getattr(plan_result, "planned_trajectory", None)
+
     def _failure_result(
         self,
         target_type: str,
@@ -590,6 +607,8 @@ class UR5MoveItPlanBackend:
         skill_id: str,
         step_id: Optional[int] = None,
         raw_plan_available: bool = False,
+        raw_trajectory=None,
+        target_command: Optional[Dict[str, Any]] = None,
     ) -> MotionPlanCacheEntry:
         entry = MotionPlanCacheEntry(
             plan_id=summary.plan_id,
@@ -598,6 +617,8 @@ class UR5MoveItPlanBackend:
             summary=summary,
             created_at=datetime.now(timezone.utc).isoformat(),
             raw_plan_available=raw_plan_available,
+            raw_trajectory=raw_trajectory,
+            target_command=target_command,
         )
         self.plan_cache[entry.plan_id] = entry
         return entry

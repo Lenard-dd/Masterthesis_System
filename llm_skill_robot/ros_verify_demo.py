@@ -53,7 +53,8 @@ def main():
                     description="Verify moving to home target would be allowed",
                     parameters={
                         "target_name": "home",
-                        "velocity_scale": 0.1,
+                        "velocity_scale": 0.03,
+                        "acceleration_scale": 0.03,
                     },
                 )
             ],

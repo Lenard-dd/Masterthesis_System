@@ -21,8 +21,8 @@ def _create_plan() -> RobotPlan:
                 description="Plan to named target home",
                 parameters={
                     "target": "home",
-                    "velocity_scale": 0.1,
-                    "acceleration_scale": 0.1,
+                    "velocity_scale": 0.03,
+                    "acceleration_scale": 0.03,
                 },
             )
         ],
@@ -101,8 +101,8 @@ def main():
         step = plan.steps[0]
         plan_result = backend.plan_to_named_target(
             target=step.parameters["target"],
-            velocity_scale=step.parameters.get("velocity_scale", 0.1),
-            acceleration_scale=step.parameters.get("acceleration_scale", 0.1),
+            velocity_scale=step.parameters.get("velocity_scale", 0.03),
+            acceleration_scale=step.parameters.get("acceleration_scale", 0.03),
             skill_id=step.skill_id,
             step_id=int(step.step_id),
         )

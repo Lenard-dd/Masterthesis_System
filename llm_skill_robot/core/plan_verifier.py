@@ -38,17 +38,23 @@ class PlanVerifier:
 
             # Check required parameters
             for param in skill.parameters:
-                if param.required:
-                    value = self._get_step_parameter(step, param.name)
-                    if value is None:
+                value = self._get_step_parameter(step, param.name)
+                if value is None:
+                    if param.required:
                         reasons.append(f"Missing required parameter '{param.name}' for skill '{step.skill_id}'")
-                    else:
-                        # Check type
-                        if not self.check_parameter_type(value, param.type):
-                            reasons.append(f"Invalid type for parameter '{param.name}' in skill '{step.skill_id}': expected {param.type}")
-                        # Check allowed values
-                        if param.allowed_values and value not in param.allowed_values:
-                            reasons.append(f"Invalid value '{value}' for parameter '{param.name}' in skill '{step.skill_id}': allowed {param.allowed_values}")
+                    continue
+
+                # Check type
+                if not self.check_parameter_type(value, param.type):
+                    reasons.append(f"Invalid type for parameter '{param.name}' in skill '{step.skill_id}': expected {param.type}")
+                    continue
+                # Check allowed values
+                if param.allowed_values and value not in param.allowed_values:
+                    reasons.append(f"Invalid value '{value}' for parameter '{param.name}' in skill '{step.skill_id}': allowed {param.allowed_values}")
+                if param.min_value is not None and value < param.min_value:
+                    reasons.append(f"Invalid value '{value}' for parameter '{param.name}' in skill '{step.skill_id}': minimum {param.min_value}")
+                if param.max_value is not None and value > param.max_value:
+                    reasons.append(f"Invalid value '{value}' for parameter '{param.name}' in skill '{step.skill_id}': maximum {param.max_value}")
 
         # Simple robot capabilities check (placeholder)
         # For now, just check if there are any capabilities defined

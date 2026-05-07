@@ -17,8 +17,13 @@ def test_get_skill():
     skill = library.get_skill("move_to_named_target")
     assert skill is not None
     assert skill.name == "Move to Named Target"
-    assert len(skill.parameters) == 1
-    assert skill.parameters[0].name == "target_name"
+    parameters = {parameter.name: parameter for parameter in skill.parameters}
+    assert "target_name" in parameters
+    assert parameters["target_name"].required is True
+    assert parameters["velocity_scale"].default == 0.03
+    assert parameters["velocity_scale"].max_value == 0.1
+    assert parameters["acceleration_scale"].default == 0.03
+    assert parameters["acceleration_scale"].max_value == 0.1
 
 
 def test_get_unknown_skill():

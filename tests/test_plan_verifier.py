@@ -150,3 +150,26 @@ def test_move_to_named_target_accepts_target_alias():
 
     assert result.decision == VerificationDecision.ALLOW
     assert result.reasons == []
+
+
+def test_motion_scale_above_limit_is_blocked():
+    """Test conservative motion scale limits are enforced."""
+    library = SkillLibrary()
+    verifier = PlanVerifier(library)
+
+    plan = RobotPlan(
+        task="Test velocity limit",
+        steps=[
+            PlanStep(
+                step_id="1",
+                skill_id="move_to_named_target",
+                description="Plan to home too fast",
+                parameters={"target": "home", "velocity_scale": 0.2}
+            )
+        ]
+    )
+
+    result = verifier.verify_plan(plan)
+
+    assert result.decision == VerificationDecision.BLOCK
+    assert any("maximum 0.1" in reason for reason in result.reasons)
