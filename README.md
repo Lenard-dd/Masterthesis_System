@@ -30,6 +30,16 @@ pytest
 python -m llm_skill_robot.main_cli
 ```
 
+## MoveIt Plan-Only Demo
+
+Preview a dry-run MoveIt plan without executing robot motion:
+
+```bash
+cd ~/dev_ws/src/LLM_Ros
+source .venv/bin/activate
+python -m llm_skill_robot.moveit_plan_demo
+```
+
 ## ROS 2 Demo
 
 Run the package as an ament_python node from a ROS 2 Humble workspace:
@@ -40,6 +50,16 @@ source /opt/ros/humble/setup.bash
 colcon build --packages-select llm_skill_robot --symlink-install
 source install/setup.bash
 ros2 run llm_skill_robot llm-skill-demo
+```
+
+Run the same plan-only demo through ROS 2 packaging:
+
+```bash
+cd ~/dev_ws
+source /opt/ros/humble/setup.zsh
+colcon build --packages-select llm_skill_robot --symlink-install
+source install/setup.zsh
+ros2 run llm_skill_robot moveit-plan-demo
 ```
 
 ## Read UR5 Joint State

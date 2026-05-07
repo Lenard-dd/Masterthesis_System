@@ -38,3 +38,28 @@ class ExecutionReport(BaseModel):
     status: Literal["SUCCESS", "FAILED", "NOT_EXECUTED"]
     step_results: List[StepExecutionResult] = Field(default_factory=list)
     summary: str
+
+
+class MotionPlanSummary(BaseModel):
+    plan_id: str
+    target_type: str
+    target_name: Optional[str] = None
+    target_pose: Optional[Dict[str, Any]] = None
+    planning_group: str
+    success: bool
+    message: str
+    num_trajectory_points: int = 0
+    duration_sec: Optional[float] = None
+    joint_names: List[str] = Field(default_factory=list)
+    max_joint_delta_rad: Optional[float] = None
+    max_velocity_abs: Optional[float] = None
+    trajectory_preview: Dict[str, Any] = Field(default_factory=dict)
+
+
+class MotionPlanCacheEntry(BaseModel):
+    plan_id: str
+    skill_id: str
+    step_id: Optional[int] = None
+    summary: MotionPlanSummary
+    created_at: str
+    raw_plan_available: bool = False

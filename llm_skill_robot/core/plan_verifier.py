@@ -39,10 +39,10 @@ class PlanVerifier:
             # Check required parameters
             for param in skill.parameters:
                 if param.required:
-                    if param.name not in step.parameters:
+                    value = self._get_step_parameter(step, param.name)
+                    if value is None:
                         reasons.append(f"Missing required parameter '{param.name}' for skill '{step.skill_id}'")
                     else:
-                        value = step.parameters[param.name]
                         # Check type
                         if not self.check_parameter_type(value, param.type):
                             reasons.append(f"Invalid type for parameter '{param.name}' in skill '{step.skill_id}': expected {param.type}")
@@ -76,3 +76,11 @@ class PlanVerifier:
         if expected_python_type:
             return isinstance(value, expected_python_type)
         return False
+
+    def _get_step_parameter(self, step, parameter_name: str):
+        """Return a step parameter, including accepted aliases for demos."""
+        if parameter_name in step.parameters:
+            return step.parameters[parameter_name]
+        if step.skill_id == "move_to_named_target" and parameter_name == "target_name":
+            return step.parameters.get("target")
+        return None

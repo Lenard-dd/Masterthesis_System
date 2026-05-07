@@ -127,3 +127,26 @@ def test_verify_plan_accepts_robot_state_context():
 
     assert result.decision == VerificationDecision.ALLOW
     assert "No /joint_states message received." in result.warnings
+
+
+def test_move_to_named_target_accepts_target_alias():
+    """Test plan-only demos can use target as an alias for target_name."""
+    library = SkillLibrary()
+    verifier = PlanVerifier(library)
+
+    plan = RobotPlan(
+        task="Test target alias",
+        steps=[
+            PlanStep(
+                step_id="1",
+                skill_id="move_to_named_target",
+                description="Plan to home",
+                parameters={"target": "home"}
+            )
+        ]
+    )
+
+    result = verifier.verify_plan(plan)
+
+    assert result.decision == VerificationDecision.ALLOW
+    assert result.reasons == []
