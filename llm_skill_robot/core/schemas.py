@@ -66,5 +66,4 @@ class MotionPlanCacheEntry(BaseModel):
     created_at: str
     raw_plan_available: bool = False
     raw_trajectory: Optional[Any] = None
-    trajectory_start: Optional[Any] = None
     target_command: Optional[Dict[str, Any]] = None

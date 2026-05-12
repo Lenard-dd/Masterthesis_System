@@ -14,7 +14,6 @@ class TrajectoryVisualizer:
     def publish_preview(self, plan_entry_or_summary) -> Dict[str, Any]:
         """Publish a DisplayTrajectory if a raw trajectory is available."""
         raw_trajectory = getattr(plan_entry_or_summary, "raw_trajectory", None)
-        trajectory_start = getattr(plan_entry_or_summary, "trajectory_start", None)
         if raw_trajectory is None:
             return {
                 "success": False,
