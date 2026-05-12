@@ -28,7 +28,7 @@ class Skill(BaseModel):
     skill_id: str = Field(..., description="Unique identifier for the skill")
     name: str
     description: str
-    parameters: List[Parameter] = []
-    preconditions: List[str] = []
-    effects: List[str] = []
+    parameters: List[Parameter] = Field(default_factory=list)
+    preconditions: List[str] = Field(default_factory=list)
+    effects: List[str] = Field(default_factory=list)
     execution: Execution

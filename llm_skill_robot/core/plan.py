@@ -6,7 +6,7 @@ class PlanStep(BaseModel):
     step_id: str
     skill_id: str
     description: str
-    parameters: Dict[str, Any] = {}
+    parameters: Dict[str, Any] = Field(default_factory=dict)
 
 
 class RobotPlan(BaseModel):

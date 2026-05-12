@@ -491,12 +491,6 @@ class UR5MoveItPlanBackend:
                 "joint_positions": list(target_positions),
                 "joint_positions_by_name": joint_positions_by_name,
             },
-            target_command={
-                "type": "pymoveit2_target_command",
-                "target_name": target,
-                "joint_positions": list(target_positions),
-                "joint_positions_by_name": joint_positions_by_name,
-            },
         )
         self._raw_plan_cache[plan_id] = {
             "type": "pymoveit2_target_command",
@@ -586,10 +580,6 @@ class UR5MoveItPlanBackend:
     def _execute_plan_in_rviz_sim(self, plan_id: str) -> Dict[str, Any]:
         """Execute only a backend-cached MoveIt plan in simulated execution mode."""
         cached_command = self._raw_plan_cache[plan_id]
-        if (
-            isinstance(cached_command, dict)
-            and cached_command.get("type") == "pymoveit2_target_command"
-        ):
         if (
             isinstance(cached_command, dict)
             and cached_command.get("type") == "pymoveit2_target_command"

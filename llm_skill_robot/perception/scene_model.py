@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Dict, Any
 
 
@@ -9,4 +9,4 @@ class ObjectDetection(BaseModel):
 
 
 class SceneModel(BaseModel):
-    objects: List[ObjectDetection] = []
+    objects: List[ObjectDetection] = Field(default_factory=list)
