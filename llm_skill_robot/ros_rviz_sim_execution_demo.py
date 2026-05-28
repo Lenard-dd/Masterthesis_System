@@ -18,6 +18,10 @@ from llm_skill_robot.core.trajectory_visualizer import TrajectoryVisualizer
 from llm_skill_robot.robot.ur5_moveit_plan_backend import UR5MoveItPlanBackend
 from llm_skill_robot.utils import get_config_dir
 
+RVIZ_SIM_MODE_WARNING = (
+    "RVIZ_SIM MODE ONLY. This demo is not intended for real robot execution."
+)
+
 
 def _load_safety_config() -> Dict[str, Any]:
     safety_file = get_config_dir() / "safety.yaml"
@@ -83,8 +87,12 @@ def _audit_event(audit_logger: AuditLogger, event: str, payload: Dict[str, Any])
         audit_logger._write_entry({"event": event, **payload})
 
 
+def _decision_value(decision) -> str:
+    return getattr(decision, "value", decision)
+
+
 def main():
-    print("RVIZ_SIM MODE ONLY. This demo is not intended for real robot execution.")
+    print(RVIZ_SIM_MODE_WARNING)
 
     try:
         import rclpy
@@ -102,16 +110,47 @@ def main():
         safety_config = _load_safety_config()
         execution_config = load_execution_config().model_dump()
         execution_mode = "rviz_sim"
+        audit_logger = AuditLogger()
+        _audit_event(
+            audit_logger,
+            "rviz_sim_demo_started",
+            {
+                "mode": execution_mode,
+                "message": RVIZ_SIM_MODE_WARNING,
+            },
+        )
+        _audit_event(
+            audit_logger,
+            "configs_and_skills_loaded",
+            {
+                "execution_config": execution_config,
+                "safety_config": safety_config,
+                "skill_count": len(getattr(skill_library, "skills", {})),
+            },
+        )
 
         if not is_execution_allowed(execution_mode, execution_config):
             print("\nExecution config does not allow rviz_sim mode. Exiting safely.")
+            _audit_event(
+                audit_logger,
+                "rviz_sim_execution_not_allowed",
+                {"mode": execution_mode, "execution_config": execution_config},
+            )
+            return
+
+        if execution_config.get("allow_real_robot_execution", False):
+            print("\nreal_robot execution is enabled in config. Exiting safely.")
+            _audit_event(
+                audit_logger,
+                "real_robot_execution_config_blocked_demo",
+                {"allow_real_robot_execution": True},
+            )
             return
 
         plan_verifier = PlanVerifier(skill_library)
         human_validator = HumanValidator()
         trajectory_validator = TrajectoryValidator(safety_config)
         trajectory_reviewer = TrajectoryReviewer()
-        audit_logger = AuditLogger()
 
         plan = _create_plan()
         _print_plan(plan)
@@ -120,8 +159,16 @@ def main():
         verification_result = plan_verifier.verify_plan(plan)
         audit_logger.log_verification(plan, verification_result)
         _print_validation_result("Verification", verification_result)
-        if verification_result.decision != "ALLOW":
+        if _decision_value(verification_result.decision) == "BLOCK":
             print("\nPlan blocked by verification. No planning or execution requested.")
+            _audit_event(
+                audit_logger,
+                "rviz_sim_demo_stopped",
+                {
+                    "reason": "verification_blocked",
+                    "verification_result": verification_result.model_dump(),
+                },
+            )
             return
 
         validation_result = human_validator.validate_plan(plan)
@@ -130,6 +177,14 @@ def main():
         print("approved" if validation_result.decision == ValidationDecision.APPROVE else validation_result.decision.value.lower())
         if validation_result.decision != ValidationDecision.APPROVE:
             print("\nPlan was not approved. No planning or execution requested.")
+            _audit_event(
+                audit_logger,
+                "rviz_sim_demo_stopped",
+                {
+                    "reason": "human_validation_not_approved",
+                    "validation_result": validation_result.model_dump(),
+                },
+            )
             return
 
         backend = UR5MoveItPlanBackend(
@@ -163,6 +218,15 @@ def main():
 
         if trajectory_result["decision"] != "ALLOW":
             print("\nTrajectory validation blocked simulated execution.")
+            _audit_event(
+                audit_logger,
+                "rviz_sim_demo_stopped",
+                {
+                    "reason": "trajectory_validation_blocked",
+                    "plan_id": plan_result["plan_id"],
+                    "trajectory_validation": trajectory_result,
+                },
+            )
             return
 
         _audit_event(
@@ -181,8 +245,17 @@ def main():
         )
         if not review_approved:
             print("\nTrajectory review was not approved. No execution requested.")
+            _audit_event(
+                audit_logger,
+                "rviz_sim_demo_stopped",
+                {
+                    "reason": "trajectory_review_not_approved",
+                    "plan_id": plan_result["plan_id"],
+                },
+            )
             return
 
+        print("\nVisual Trajectory Preview:")
         if execution_config.get("enable_visual_trajectory_preview", True):
             preview_topic = execution_config.get(
                 "visual_preview_topic",
@@ -200,15 +273,25 @@ def main():
                 },
             )
 
-            print("\nVisual Trajectory Preview:")
             if preview_result["success"]:
                 print(preview_result["message"])
-                print("Please inspect the planned trajectory in RViz before final confirmation.")
             else:
                 print("No raw trajectory available. Please rely on textual trajectory review and MoveIt/RViz planning display.")
         else:
-            print("\nVisual Trajectory Preview:")
             print("Visual trajectory preview is disabled by execution config.")
+            _audit_event(
+                audit_logger,
+                "visual_trajectory_preview",
+                {
+                    "plan_id": plan_result["plan_id"],
+                    "preview_result": {
+                        "success": False,
+                        "message": "Visual trajectory preview is disabled by execution config.",
+                    },
+                },
+            )
+
+        print("Please inspect RViz. No motion has been executed yet.")
 
         print("\nFinal Confirmation:")
         choice = input("\nExecute this plan in RViz/fake hardware only? [y/N] ").strip()
@@ -223,11 +306,21 @@ def main():
         )
         if not final_confirmed:
             print("\nFinal confirmation was not provided. No execution requested.")
+            _audit_event(
+                audit_logger,
+                "rviz_sim_demo_stopped",
+                {
+                    "reason": "final_confirmation_not_provided",
+                    "plan_id": plan_result["plan_id"],
+                },
+            )
             return
 
         execution_result = backend.execute_cached_plan_simulated(
             plan_result["plan_id"],
             final_confirmed=True,
+            trajectory_validation_allowed=trajectory_result["decision"] == "ALLOW",
+            trajectory_review_approved=review_approved,
         )
         _audit_event(audit_logger, "rviz_sim_execution_result", execution_result)
 

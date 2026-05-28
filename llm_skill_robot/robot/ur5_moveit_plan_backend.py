@@ -1,5 +1,6 @@
 """UR5 MoveIt plan-only backend."""
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -23,6 +24,116 @@ PYMOVEIT2_TARGET_COMMAND_WARNING = (
     "No explicit trajectory preview available; pymoveit2 will execute target command "
     "in RViz/fake hardware only after final confirmation."
 )
+
+
+@dataclass(frozen=True)
+class JointTrajectoryExtraction:
+    joint_trajectory: Optional[Any]
+    reason: str
+    source: Optional[str] = None
+
+    @property
+    def success(self) -> bool:
+        return self.joint_trajectory is not None
+
+
+def extract_joint_trajectory(cached_plan) -> JointTrajectoryExtraction:
+    """Extract a valid JointTrajectory message-like object from a cached plan."""
+    if cached_plan is None:
+        return JointTrajectoryExtraction(None, "No cached plan was provided.")
+
+    candidates = (
+        ("cached_plan.joint_trajectory", getattr(cached_plan, "joint_trajectory", None)),
+        (
+            "cached_plan.robot_trajectory.joint_trajectory",
+            getattr(getattr(cached_plan, "robot_trajectory", None), "joint_trajectory", None),
+        ),
+        (
+            "cached_plan.display_trajectory.trajectory[0].joint_trajectory",
+            _first_display_joint_trajectory(getattr(cached_plan, "display_trajectory", None)),
+        ),
+    )
+
+    rejection_reasons = []
+    for source, candidate in candidates:
+        if candidate is None:
+            rejection_reasons.append(f"{source} is missing")
+            continue
+
+        valid_candidate = _valid_joint_trajectory(candidate)
+        if valid_candidate is not None:
+            return JointTrajectoryExtraction(valid_candidate, f"Using {source}.", source)
+
+        rejection_reasons.append(f"{source} is not a valid JointTrajectory")
+
+    return JointTrajectoryExtraction(
+        None,
+        "No valid JointTrajectory found: " + "; ".join(rejection_reasons) + ".",
+    )
+
+
+def _first_display_joint_trajectory(display_trajectory):
+    trajectories = getattr(display_trajectory, "trajectory", None)
+    if not trajectories:
+        return None
+    return getattr(trajectories[0], "joint_trajectory", None)
+
+
+def _valid_joint_trajectory(candidate):
+    if isinstance(candidate, dict):
+        return _joint_trajectory_from_dict(candidate)
+    if hasattr(candidate, "joint_names") and hasattr(candidate, "points"):
+        return candidate
+    return None
+
+
+def _joint_trajectory_from_dict(data: Dict[str, Any]):
+    try:
+        from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+    except Exception:
+        return None
+
+    joint_names = data.get("joint_names")
+    points = data.get("points")
+    if not isinstance(joint_names, list) or not isinstance(points, list):
+        return None
+
+    trajectory = JointTrajectory()
+    trajectory.joint_names = list(joint_names)
+    for point_data in points:
+        if isinstance(point_data, JointTrajectoryPoint):
+            trajectory.points.append(point_data)
+            continue
+        if not isinstance(point_data, dict):
+            return None
+
+        point = JointTrajectoryPoint()
+        for field in ("positions", "velocities", "accelerations", "effort"):
+            values = point_data.get(field)
+            if values is not None:
+                setattr(point, field, list(values))
+        if "time_from_start" in point_data:
+            _assign_duration(point, point_data["time_from_start"])
+        trajectory.points.append(point)
+    return trajectory
+
+
+def _assign_duration(point, duration_data) -> None:
+    if hasattr(duration_data, "sec") and hasattr(duration_data, "nanosec"):
+        point.time_from_start = duration_data
+        return
+    if not isinstance(duration_data, dict):
+        return
+
+    try:
+        from builtin_interfaces.msg import Duration
+    except Exception:
+        return
+
+    point.time_from_start = Duration(
+        sec=int(duration_data.get("sec", 0)),
+        nanosec=int(duration_data.get("nanosec", 0)),
+    )
 
 
 class UR5MoveItPlanBackend:
@@ -196,7 +307,26 @@ class UR5MoveItPlanBackend:
 
     def get_plan(self, plan_id: str) -> Optional[MotionPlanCacheEntry]:
         """Return a cached plan entry by plan id."""
+        return self.get_cached_plan(plan_id)
+
+    def get_cached_plan(self, plan_id: str) -> Optional[MotionPlanCacheEntry]:
+        """Return a cached motion plan by plan id."""
         return self.plan_cache.get(plan_id)
+
+    def has_executable_trajectory(self, plan_id: str) -> bool:
+        """Return True when a cached plan has data that may be simulated."""
+        cached_plan = self.get_cached_plan(plan_id)
+        if cached_plan is None:
+            return False
+        if cached_plan.target_command is not None or extract_joint_trajectory(cached_plan).success:
+            return True
+        raw_command = self._raw_plan_cache.get(plan_id)
+        return isinstance(raw_command, dict) and raw_command.get("type") == "pymoveit2_target_command"
+
+    def has_visual_preview(self, plan_id: str) -> bool:
+        """Return True when a cached plan has RViz preview data."""
+        cached_plan = self.get_cached_plan(plan_id)
+        return bool(cached_plan and cached_plan.has_visual_preview)
 
     def list_cached_plans(self):
         """Return all cached plan entries."""
@@ -211,6 +341,8 @@ class UR5MoveItPlanBackend:
         self,
         plan_id: str,
         final_confirmed: bool = False,
+        trajectory_validation_allowed: bool = False,
+        trajectory_review_approved: bool = False,
     ) -> Dict[str, Any]:
         """Execute a cached plan only in RViz/fake-hardware simulation mode."""
         mode = self.execution_mode
@@ -218,14 +350,6 @@ class UR5MoveItPlanBackend:
             return self._execution_result(
                 success=False,
                 message="Simulated execution is only allowed when execution mode is 'rviz_sim'.",
-                plan_id=plan_id,
-                output={},
-            )
-
-        if not final_confirmed:
-            return self._execution_result(
-                success=False,
-                message="Final human confirmation is required before simulated execution.",
                 plan_id=plan_id,
                 output={},
             )
@@ -243,6 +367,32 @@ class UR5MoveItPlanBackend:
             return self._execution_result(
                 success=False,
                 message="Cached plan summary indicates planning failed.",
+                plan_id=plan_id,
+                output={},
+            )
+
+        if not trajectory_validation_allowed:
+            return self._execution_result(
+                success=False,
+                message="Trajectory validation must allow the plan before RViz/fake hardware execution.",
+                plan_id=plan_id,
+                output={},
+            )
+
+        if not trajectory_review_approved:
+            return self._execution_result(
+                success=False,
+                message="Trajectory review must be approved before RViz/fake hardware execution.",
+                plan_id=plan_id,
+                output={},
+            )
+
+        if not final_confirmed:
+            message = "Final confirmation required before RViz/fake hardware execution."
+            print(message)
+            return self._execution_result(
+                success=False,
+                message=message,
                 plan_id=plan_id,
                 output={},
             )
@@ -365,13 +515,14 @@ class UR5MoveItPlanBackend:
             skill_id=kwargs.get("skill_id", "move_to_named_target"),
             step_id=kwargs.get("step_id"),
             raw_plan_available=summary.success,
-            raw_trajectory=self._extract_robot_trajectory(plan_result),
+            robot_trajectory=self._extract_robot_trajectory(plan_result),
+            joint_trajectory=self._extract_joint_trajectory(plan_result),
             trajectory_start=self._extract_trajectory_start(plan_result),
         )
         if summary.success:
             self._raw_plan_cache[summary.plan_id] = {
                 "type": "pymoveit2_joint_trajectory",
-                "joint_trajectory": self._extract_joint_trajectory(plan_result),
+                "joint_trajectory": entry.joint_trajectory,
             }
         return self._result_from_entry(entry)
 
@@ -575,48 +726,72 @@ class UR5MoveItPlanBackend:
             return False
 
     def _moveit_execution_interface_available(self, plan_id: str) -> bool:
-        return self._moveit2 is not None and plan_id in self._raw_plan_cache
+        return self._moveit2 is not None and self.has_executable_trajectory(plan_id)
 
     def _execute_plan_in_rviz_sim(self, plan_id: str) -> Dict[str, Any]:
         """Execute only a backend-cached MoveIt plan in simulated execution mode."""
-        cached_command = self._raw_plan_cache[plan_id]
-        if (
-            isinstance(cached_command, dict)
-            and cached_command.get("type") == "pymoveit2_target_command"
-        ):
+        cached_plan = self.get_cached_plan(plan_id)
+        cached_command = self._raw_plan_cache.get(plan_id)
+
+        target_command = cached_plan.target_command if cached_plan is not None else None
+        if target_command is None and isinstance(cached_command, dict):
+            if cached_command.get("type") == "pymoveit2_target_command":
+                target_command = cached_command
+
+        if target_command is not None:
+            self._debug_execution_input(
+                plan_id=plan_id,
+                trajectory_type="pymoveit2_target_command",
+                joint_names=list(target_command.get("joint_positions_by_name", {}).keys()),
+                num_points=0,
+            )
             if not hasattr(self._moveit2, "move_to_configuration"):
                 raise RuntimeError("pymoveit2 MoveIt2 object has no move_to_configuration method.")
-            self._moveit2.move_to_configuration(cached_command["joint_positions"])
+            self._moveit2.move_to_configuration(target_command["joint_positions"])
             if hasattr(self._moveit2, "wait_until_executed"):
                 self._moveit2.wait_until_executed()
             return {
                 "simulated_execution": True,
                 "command_type": "pymoveit2_target_command",
-                "target_name": cached_command["target_name"],
+                "target_name": target_command["target_name"],
             }
 
-        if (
-            isinstance(cached_command, dict)
-            and cached_command.get("type") == "pymoveit2_joint_trajectory"
-        ):
-            joint_trajectory = cached_command.get("joint_trajectory")
-            if joint_trajectory is None:
-                raise RuntimeError("Cached plan has no JointTrajectory for pymoveit2 execution.")
-            if not hasattr(self._moveit2, "execute"):
-                raise RuntimeError("pymoveit2 MoveIt2 object has no execute method.")
-            self._moveit2.execute(joint_trajectory)
-            if hasattr(self._moveit2, "wait_until_executed"):
-                self._moveit2.wait_until_executed()
-            return {
-                "simulated_execution": True,
-                "command_type": "pymoveit2_joint_trajectory",
-            }
+        extraction = extract_joint_trajectory(cached_plan)
+        if not extraction.success:
+            raise RuntimeError(extraction.reason)
 
-        if hasattr(self._moveit2, "execute"):
-            self._moveit2.execute(cached_command)
-            return {"simulated_execution": True, "command_type": "pymoveit2_plan"}
+        joint_trajectory = extraction.joint_trajectory
+        self._debug_execution_input(
+            plan_id=plan_id,
+            trajectory_type=type(joint_trajectory).__name__,
+            joint_names=list(getattr(joint_trajectory, "joint_names", []) or []),
+            num_points=len(getattr(joint_trajectory, "points", []) or []),
+        )
+        if not hasattr(self._moveit2, "execute"):
+            raise RuntimeError("pymoveit2 MoveIt2 object has no execute method.")
+        self._moveit2.execute(joint_trajectory)
+        if hasattr(self._moveit2, "wait_until_executed"):
+            self._moveit2.wait_until_executed()
+        return {
+            "simulated_execution": True,
+            "command_type": "pymoveit2_joint_trajectory",
+            "trajectory_source": extraction.source,
+        }
 
-        raise RuntimeError("No safe pymoveit2 execution method is available.")
+    @staticmethod
+    def _debug_execution_input(
+        plan_id: str,
+        trajectory_type: str,
+        joint_names,
+        num_points: int,
+    ) -> None:
+        print(
+            "RVIZ_SIM execution input: "
+            f"plan_id={plan_id}, "
+            f"trajectory_type={trajectory_type}, "
+            f"joint_names={joint_names}, "
+            f"num_points={num_points}"
+        )
 
     def _summary_from_plan_result(
         self,
@@ -707,7 +882,9 @@ class UR5MoveItPlanBackend:
         skill_id: str,
         step_id: Optional[int] = None,
         raw_plan_available: bool = False,
-        raw_trajectory=None,
+        display_trajectory=None,
+        robot_trajectory=None,
+        joint_trajectory=None,
         trajectory_start=None,
         target_command: Optional[Dict[str, Any]] = None,
     ) -> MotionPlanCacheEntry:
@@ -717,8 +894,11 @@ class UR5MoveItPlanBackend:
             step_id=step_id,
             summary=summary,
             created_at=datetime.now(timezone.utc).isoformat(),
+            mode=self.execution_mode,
+            display_trajectory=display_trajectory,
+            robot_trajectory=robot_trajectory,
+            joint_trajectory=joint_trajectory,
             raw_plan_available=raw_plan_available,
-            raw_trajectory=raw_trajectory,
             trajectory_start=trajectory_start,
             target_command=target_command,
         )

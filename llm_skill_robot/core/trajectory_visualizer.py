@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 
 class TrajectoryVisualizer:
-    """Publish cached backend-generated trajectories for RViz inspection."""
+    """Publish cached backend-generated trajectories for RViz inspection only."""
 
     def __init__(self, node=None, topic: str = "/display_planned_path"):
         self.node = node
@@ -12,12 +12,14 @@ class TrajectoryVisualizer:
         self._publisher = None
 
     def publish_preview(self, plan_entry_or_summary) -> Dict[str, Any]:
-        """Publish a DisplayTrajectory if a raw trajectory is available."""
-        raw_trajectory = getattr(plan_entry_or_summary, "raw_trajectory", None)
-        if raw_trajectory is None:
+        """Publish a DisplayTrajectory preview without executing motion."""
+        display_trajectory = getattr(plan_entry_or_summary, "display_trajectory", None)
+        robot_trajectory = getattr(plan_entry_or_summary, "robot_trajectory", None)
+        trajectory_start = getattr(plan_entry_or_summary, "trajectory_start", None)
+        if display_trajectory is None and robot_trajectory is None:
             return {
                 "success": False,
-                "message": "No raw trajectory available for RViz visual preview.",
+                "message": "No trajectory available for RViz visual preview.",
             }
 
         if self.node is None:
@@ -42,20 +44,24 @@ class TrajectoryVisualizer:
                     10,
                 )
 
-            display_trajectory = DisplayTrajectory()
-            if trajectory_start is not None:
-                display_trajectory.trajectory_start = trajectory_start
-            display_trajectory.trajectory.append(raw_trajectory)
-            self._publisher.publish(display_trajectory)
+            preview_message = display_trajectory
+            if preview_message is None:
+                preview_message = DisplayTrajectory()
+                if trajectory_start is not None:
+                    preview_message.trajectory_start = trajectory_start
+                preview_message.trajectory.append(robot_trajectory)
+            self._publisher.publish(preview_message)
         except Exception as e:
             return {
                 "success": False,
                 "message": f"Failed to publish RViz visual preview: {e}",
             }
 
+        message = "Visual preview published. No motion has been executed."
+        print(message)
         return {
             "success": True,
-            "message": f"Publishing trajectory preview to RViz topic: {self.topic}",
+            "message": message,
             "topic": self.topic,
         }
 

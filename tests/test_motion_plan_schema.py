@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from llm_skill_robot.core.schemas import MotionPlanCacheEntry, MotionPlanSummary
+from llm_skill_robot.core.schemas import CachedMotionPlan, MotionPlanCacheEntry, MotionPlanSummary
 
 
 def test_valid_motion_plan_summary_creation():
@@ -71,3 +71,55 @@ def test_motion_plan_cache_entry_creation():
     assert entry.step_id == 1
     assert entry.summary.message == "Planning failed."
     assert entry.raw_plan_available is True
+
+
+def test_cached_motion_plan_separates_preview_from_execution_fields():
+    summary = MotionPlanSummary(
+        plan_id="plan-004",
+        target_type="named_target",
+        target_name="home",
+        planning_group="ur_manipulator",
+        success=True,
+        message="Planning succeeded.",
+    )
+    display_trajectory = object()
+    joint_trajectory = object()
+
+    entry = CachedMotionPlan(
+        plan_id="plan-004",
+        skill_id="move_to_named_target",
+        summary=summary,
+        created_at="2026-05-07T12:00:00Z",
+        mode="rviz_sim",
+        display_trajectory=display_trajectory,
+        joint_trajectory=joint_trajectory,
+    )
+
+    assert isinstance(entry, MotionPlanCacheEntry)
+    assert entry.display_trajectory is display_trajectory
+    assert entry.joint_trajectory is joint_trajectory
+    assert entry.has_visual_preview is True
+    assert entry.has_executable_trajectory is True
+
+
+def test_legacy_raw_trajectory_maps_to_robot_trajectory():
+    summary = MotionPlanSummary(
+        plan_id="plan-005",
+        target_type="named_target",
+        target_name="home",
+        planning_group="ur_manipulator",
+        success=True,
+        message="Planning succeeded.",
+    )
+    robot_trajectory = object()
+
+    entry = MotionPlanCacheEntry(
+        plan_id="plan-005",
+        skill_id="move_to_named_target",
+        summary=summary,
+        created_at="2026-05-07T12:00:00Z",
+        raw_trajectory=robot_trajectory,
+    )
+
+    assert entry.robot_trajectory is robot_trajectory
+    assert entry.raw_trajectory is robot_trajectory

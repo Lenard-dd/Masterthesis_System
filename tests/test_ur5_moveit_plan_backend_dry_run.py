@@ -47,6 +47,9 @@ def test_get_plan_returns_cached_plan():
     assert cached_plan.plan_id == result["plan_id"]
     assert cached_plan.step_id == 3
     assert cached_plan.summary.target_name == "home"
+    assert backend.get_cached_plan(result["plan_id"]) is cached_plan
+    assert backend.has_executable_trajectory(result["plan_id"]) is False
+    assert backend.has_visual_preview(result["plan_id"]) is False
 
 
 def test_clear_plan_cache_clears_cache():
@@ -107,5 +110,7 @@ def test_pymoveit2_no_plan_api_caches_target_command_for_rviz_sim():
     assert result["summary"]["trajectory_preview"]["pymoveit2_target_command"] is True
     assert result["plan_id"] in backend.plan_cache
     assert result["plan_id"] in backend._raw_plan_cache
+    assert backend.has_executable_trajectory(result["plan_id"]) is True
+    assert backend.has_visual_preview(result["plan_id"]) is False
     assert validation["decision"] == "ALLOW"
     assert "No explicit trajectory preview available" in validation["warnings"][0]

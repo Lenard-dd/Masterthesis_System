@@ -1,8 +1,8 @@
 # Skills configuration
 # This file defines the available skills for the robot
 motion_defaults:
-  velocity_scale: 0.03
-  acceleration_scale: 0.03
+  velocity_scale: 0.05
+  acceleration_scale: 0.05
 motion_limits:
   velocity_scale:
     max: 0.1

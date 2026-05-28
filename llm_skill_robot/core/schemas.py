@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Any, Dict, List, Literal, Optional
 from enum import Enum
 
@@ -64,6 +64,38 @@ class MotionPlanCacheEntry(BaseModel):
     step_id: Optional[int] = None
     summary: MotionPlanSummary
     created_at: str
-    raw_plan_available: bool = False
-    raw_trajectory: Optional[Any] = None
+    mode: str = "plan_only"
+    display_trajectory: Optional[Any] = None
+    robot_trajectory: Optional[Any] = None
+    joint_trajectory: Optional[Any] = None
     target_command: Optional[Dict[str, Any]] = None
+    raw_plan_available: bool = False
+    trajectory_start: Optional[Any] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_raw_trajectory(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "raw_trajectory" in data and "robot_trajectory" not in data:
+            data = dict(data)
+            data["robot_trajectory"] = data.pop("raw_trajectory")
+        return data
+
+    @property
+    def raw_trajectory(self) -> Optional[Any]:
+        """Backward-compatible alias for the RViz-preview robot trajectory."""
+        return self.robot_trajectory
+
+    @property
+    def has_executable_trajectory(self) -> bool:
+        return (
+            self.joint_trajectory is not None
+            or self.robot_trajectory is not None
+            or self.target_command is not None
+        )
+
+    @property
+    def has_visual_preview(self) -> bool:
+        return self.display_trajectory is not None or self.robot_trajectory is not None
+
+
+CachedMotionPlan = MotionPlanCacheEntry
