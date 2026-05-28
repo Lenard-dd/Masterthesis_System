@@ -86,6 +86,27 @@ ros2 run llm_skill_robot ros-rviz-sim-execution-demo
 
 After you approve the text trajectory review, the demo attempts to publish a visual trajectory preview to RViz on `/display_planned_path`. You must still inspect RViz and give the final confirmation before any RViz/fake-hardware simulated execution is requested.
 
+## Milestone 1 RViz Simulation Demo Checklist
+
+Use this checklist when recording or documenting the thesis Milestone 1 demo:
+
+- Confirm the terminal prints `RVIZ_SIM MODE ONLY. This demo is not intended for real robot execution.`
+- Confirm `config/execution.yaml` keeps `allow_real_robot_execution: false`.
+- Build and source the ROS 2 workspace before running the demo.
+- Start RViz/fake hardware in a separate terminal if visual inspection is required.
+- Run `ros2 run llm_skill_robot ros-rviz-sim-execution-demo`.
+- Confirm the generated plan is `move_to_named_target` with `target=home`, `velocity_scale=0.03`, and `acceleration_scale=0.03`.
+- Confirm plan verification returns `ALLOW`.
+- Approve the human validation prompt only after checking the printed plan.
+- Confirm the Motion Plan Summary is printed and includes the cached `plan_id`.
+- Confirm trajectory validation returns `ALLOW`.
+- Read the trajectory review and approve it only if the plan is acceptable for RViz/fake hardware.
+- Confirm the visual preview is published to `/display_planned_path`.
+- Inspect RViz after the message `Please inspect RViz. No motion has been executed yet.`
+- Give final confirmation only after RViz inspection.
+- Confirm the Execution Report says `Mode: rviz_sim`.
+- Save or reference the printed audit log path. The audit log should include `plan_generated`, `plan_verified`, `human_validated`, `motion_planned`, `trajectory_validated`, `trajectory_reviewed`, `visual_preview_published`, `final_confirmed`, and `simulated_execution_result`.
+
 ## Read UR5 Joint State
 
 Read the current UR5 joint state from `/joint_states` without sending any robot commands:

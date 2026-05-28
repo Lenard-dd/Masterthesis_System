@@ -1,5 +1,6 @@
 """ROS 2 RViz/fake-hardware simulated execution demo for UR5."""
 
+from datetime import datetime, timezone
 import sys
 from typing import Any, Dict
 
@@ -84,7 +85,16 @@ def _print_validation_result(label: str, result) -> None:
 
 def _audit_event(audit_logger: AuditLogger, event: str, payload: Dict[str, Any]) -> None:
     if hasattr(audit_logger, "_write_entry"):
-        audit_logger._write_entry({"event": event, **payload})
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event": event,
+            "mode": "rviz_sim",
+            "plan_id": None,
+            "decision": None,
+            "message": None,
+            **payload,
+        }
+        audit_logger._write_entry(entry)
 
 
 def _decision_value(decision) -> str:
@@ -93,11 +103,13 @@ def _decision_value(decision) -> str:
 
 def main():
     print(RVIZ_SIM_MODE_WARNING)
+    audit_logger = AuditLogger()
 
     try:
         import rclpy
     except ImportError:
         print("Error: rclpy not available. Please source ROS 2 setup.", file=sys.stderr)
+        print(f"\nAudit log: {audit_logger.log_file.resolve()}")
         sys.exit(1)
 
     backend = None
@@ -110,12 +122,10 @@ def main():
         safety_config = _load_safety_config()
         execution_config = load_execution_config().model_dump()
         execution_mode = "rviz_sim"
-        audit_logger = AuditLogger()
         _audit_event(
             audit_logger,
             "rviz_sim_demo_started",
             {
-                "mode": execution_mode,
                 "message": RVIZ_SIM_MODE_WARNING,
             },
         )
@@ -126,6 +136,7 @@ def main():
                 "execution_config": execution_config,
                 "safety_config": safety_config,
                 "skill_count": len(getattr(skill_library, "skills", {})),
+                "message": "Configs and skills loaded.",
             },
         )
 
@@ -134,7 +145,11 @@ def main():
             _audit_event(
                 audit_logger,
                 "rviz_sim_execution_not_allowed",
-                {"mode": execution_mode, "execution_config": execution_config},
+                {
+                    "decision": "BLOCK",
+                    "message": "Execution config does not allow rviz_sim mode.",
+                    "execution_config": execution_config,
+                },
             )
             return
 
@@ -143,7 +158,11 @@ def main():
             _audit_event(
                 audit_logger,
                 "real_robot_execution_config_blocked_demo",
-                {"allow_real_robot_execution": True},
+                {
+                    "decision": "BLOCK",
+                    "message": "real_robot execution is enabled in config.",
+                    "allow_real_robot_execution": True,
+                },
             )
             return
 
@@ -154,34 +173,65 @@ def main():
 
         plan = _create_plan()
         _print_plan(plan)
-        audit_logger.log_plan_generation(plan)
+        _audit_event(
+            audit_logger,
+            "plan_generated",
+            {
+                "decision": "GENERATED",
+                "message": "Hardcoded Milestone 1 RViz simulation plan generated.",
+                "plan": plan.model_dump(),
+            },
+        )
 
         verification_result = plan_verifier.verify_plan(plan)
-        audit_logger.log_verification(plan, verification_result)
         _print_validation_result("Verification", verification_result)
+        verification_decision = _decision_value(verification_result.decision)
+        _audit_event(
+            audit_logger,
+            "plan_verified",
+            {
+                "decision": verification_decision,
+                "message": "Plan verification completed.",
+                "reasons": verification_result.reasons,
+                "warnings": verification_result.warnings,
+            },
+        )
         if _decision_value(verification_result.decision) == "BLOCK":
             print("\nPlan blocked by verification. No planning or execution requested.")
             _audit_event(
                 audit_logger,
                 "rviz_sim_demo_stopped",
                 {
+                    "decision": "BLOCK",
                     "reason": "verification_blocked",
+                    "message": "Plan blocked by verification.",
                     "verification_result": verification_result.model_dump(),
                 },
             )
             return
 
         validation_result = human_validator.validate_plan(plan)
-        audit_logger.log_validation(plan, validation_result)
         print("\nHuman Validation:")
         print("approved" if validation_result.decision == ValidationDecision.APPROVE else validation_result.decision.value.lower())
+        human_decision = _decision_value(validation_result.decision)
+        _audit_event(
+            audit_logger,
+            "human_validated",
+            {
+                "decision": human_decision,
+                "message": "Human plan validation completed.",
+                "comments": validation_result.comments,
+            },
+        )
         if validation_result.decision != ValidationDecision.APPROVE:
             print("\nPlan was not approved. No planning or execution requested.")
             _audit_event(
                 audit_logger,
                 "rviz_sim_demo_stopped",
                 {
+                    "decision": human_decision,
                     "reason": "human_validation_not_approved",
+                    "message": "Human validation did not approve the plan.",
                     "validation_result": validation_result.model_dump(),
                 },
             )
@@ -202,6 +252,16 @@ def main():
             step_id=int(step.step_id),
         )
         _print_motion_plan_summary(plan_result)
+        _audit_event(
+            audit_logger,
+            "motion_planned",
+            {
+                "plan_id": plan_result["plan_id"],
+                "decision": "SUCCESS" if plan_result["success"] else "FAILED",
+                "message": plan_result["message"],
+                "summary": plan_result["summary"],
+            },
+        )
 
         trajectory_result = trajectory_validator.validate_motion_plan_summary(
             plan_result["summary"]
@@ -212,7 +272,10 @@ def main():
             "trajectory_validated",
             {
                 "plan_id": plan_result["plan_id"],
-                "trajectory_validation": trajectory_result,
+                "decision": trajectory_result["decision"],
+                "message": "Trajectory validation completed.",
+                "reasons": trajectory_result.get("reasons", []),
+                "warnings": trajectory_result.get("warnings", []),
             },
         )
 
@@ -222,8 +285,10 @@ def main():
                 audit_logger,
                 "rviz_sim_demo_stopped",
                 {
+                    "decision": trajectory_result["decision"],
                     "reason": "trajectory_validation_blocked",
                     "plan_id": plan_result["plan_id"],
+                    "message": "Trajectory validation blocked simulated execution.",
                     "trajectory_validation": trajectory_result,
                 },
             )
@@ -232,15 +297,20 @@ def main():
         _audit_event(
             audit_logger,
             "trajectory_review_shown",
-            {"plan_id": plan_result["plan_id"]},
+            {
+                "plan_id": plan_result["plan_id"],
+                "decision": "SHOWN",
+                "message": "Trajectory review shown to human reviewer.",
+            },
         )
         review_approved = trajectory_reviewer.ask_for_review_approval(plan_result["summary"])
         _audit_event(
             audit_logger,
-            "trajectory_review_approved",
+            "trajectory_reviewed",
             {
                 "plan_id": plan_result["plan_id"],
-                "approved": review_approved,
+                "decision": "APPROVE" if review_approved else "REJECT",
+                "message": "Trajectory review approved." if review_approved else "Trajectory review rejected.",
             },
         )
         if not review_approved:
@@ -249,8 +319,10 @@ def main():
                 audit_logger,
                 "rviz_sim_demo_stopped",
                 {
+                    "decision": "REJECT",
                     "reason": "trajectory_review_not_approved",
                     "plan_id": plan_result["plan_id"],
+                    "message": "Trajectory review was not approved.",
                 },
             )
             return
@@ -266,9 +338,11 @@ def main():
             preview_result = trajectory_visualizer.publish_preview(cached_plan)
             _audit_event(
                 audit_logger,
-                "visual_trajectory_preview",
+                "visual_preview_published",
                 {
                     "plan_id": plan_result["plan_id"],
+                    "decision": "PUBLISHED" if preview_result["success"] else "FAILED",
+                    "message": preview_result["message"],
                     "preview_result": preview_result,
                 },
             )
@@ -281,9 +355,11 @@ def main():
             print("Visual trajectory preview is disabled by execution config.")
             _audit_event(
                 audit_logger,
-                "visual_trajectory_preview",
+                "visual_preview_published",
                 {
                     "plan_id": plan_result["plan_id"],
+                    "decision": "DISABLED",
+                    "message": "Visual trajectory preview is disabled by execution config.",
                     "preview_result": {
                         "success": False,
                         "message": "Visual trajectory preview is disabled by execution config.",
@@ -298,9 +374,11 @@ def main():
         final_confirmed = choice.lower() == "y"
         _audit_event(
             audit_logger,
-            "final_execution_confirmed",
+            "final_confirmed",
             {
                 "plan_id": plan_result["plan_id"],
+                "decision": "CONFIRMED" if final_confirmed else "DECLINED",
+                "message": "Final confirmation provided." if final_confirmed else "Final confirmation not provided.",
                 "confirmed": final_confirmed,
             },
         )
@@ -310,8 +388,10 @@ def main():
                 audit_logger,
                 "rviz_sim_demo_stopped",
                 {
+                    "decision": "DECLINED",
                     "reason": "final_confirmation_not_provided",
                     "plan_id": plan_result["plan_id"],
+                    "message": "Final confirmation was not provided.",
                 },
             )
             return
@@ -322,7 +402,16 @@ def main():
             trajectory_validation_allowed=trajectory_result["decision"] == "ALLOW",
             trajectory_review_approved=review_approved,
         )
-        _audit_event(audit_logger, "rviz_sim_execution_result", execution_result)
+        _audit_event(
+            audit_logger,
+            "simulated_execution_result",
+            {
+                "plan_id": execution_result["plan_id"],
+                "decision": "SUCCESS" if execution_result["success"] else "FAILED",
+                "message": execution_result["message"],
+                "execution_result": execution_result,
+            },
+        )
 
         print("\nExecution Report:")
         print(f"Plan ID: {execution_result['plan_id']}")
@@ -335,6 +424,7 @@ def main():
         sys.exit(1)
 
     finally:
+        print(f"\nAudit log: {audit_logger.log_file.resolve()}")
         if backend is not None:
             backend.shutdown()
         if node is not None:
