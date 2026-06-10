@@ -42,6 +42,92 @@ python -m llm_skill_robot.moveit_plan_demo
 
 `pymoveit2` is the preferred MoveIt Python interface for ROS 2 Humble demos in this project.
 
+## Natural Language Plan Demo
+
+Convert a natural-language instruction into a structured `RobotPlan`, verify it, and ask for human approval. This demo does not call a real LLM API, MoveIt, or robot execution.
+
+```bash
+cd ~/dev_ws/src/LLM_Ros
+source .venv/bin/activate
+python -m llm_skill_robot.nl_plan_demo
+```
+
+Run the same demo through the ROS 2 entry point:
+
+```bash
+cd ~/dev_ws
+source /opt/ros/humble/setup.zsh
+colcon build --packages-select llm_skill_robot --symlink-install
+source install/setup.zsh
+ros2 run llm_skill_robot nl-plan-demo
+```
+
+Run the natural-language RViz/fake-hardware simulation demo:
+
+```bash
+cd ~/dev_ws
+source /opt/ros/humble/setup.zsh
+colcon build --packages-select llm_skill_robot --symlink-install
+source install/setup.zsh
+ros2 run llm_skill_robot ros-nl-rviz-sim-demo
+```
+
+## LLM Plan Demo
+
+Use a real LLM client to generate `RobotPlan` JSON, verify it, optionally ask the LLM to repair verification errors, and then ask for human validation. This demo does not call MoveIt or execute robot motion.
+
+```bash
+cd ~/dev_ws/src/LLM_Ros
+source .venv/bin/activate
+pip install -e ".[dev,llm]"
+export OPENAI_API_KEY=...
+python -m llm_skill_robot.llm_plan_demo
+```
+
+Run the same demo through the ROS 2 entry point:
+
+```bash
+cd ~/dev_ws
+source /opt/ros/humble/setup.zsh
+colcon build --packages-select llm_skill_robot --symlink-install
+source install/setup.zsh
+export OPENAI_API_KEY=...
+ros2 run llm_skill_robot llm-plan-demo
+```
+
+Run the LLM-generated plan through the RViz/fake-hardware simulation pipeline:
+
+```bash
+cd ~/dev_ws
+source /opt/ros/humble/setup.zsh
+colcon build --packages-select llm_skill_robot --symlink-install
+source install/setup.zsh
+export OPENAI_API_KEY=...
+ros2 run llm_skill_robot ros-llm-rviz-sim-demo
+```
+
+Use the provider-selectable natural language model interface directly in Python:
+
+```python
+from llm_skill_robot.agent.llm_interface import NaturalLanguageModelInterface
+from llm_skill_robot.core.skill_library import SkillLibrary
+
+skills = SkillLibrary()
+llm = NaturalLanguageModelInterface(provider="openai")
+llm.set_api_key("your_api_key_here")
+
+plan = llm.generate_robot_plan(
+    "move to observe and open the gripper",
+    available_skills=[
+        skills.get_skill(skill_id)
+        for skill_id in skills.list_skills()
+    ],
+)
+print(plan.model_dump())
+```
+
+`ChatGPTInterface` remains available as a backward-compatible shortcut for the OpenAI/ChatGPT provider. Other providers can be added behind `NaturalLanguageModelInterface` without changing `LLMPlanGenerator`.
+
 ## ROS 2 Demo
 
 Run the package as an ament_python node from a ROS 2 Humble workspace:

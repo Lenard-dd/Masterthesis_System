@@ -24,6 +24,9 @@ classifiers = [
 dev = [
     "pytest>=7.0",
 ]
+llm = [
+    "openai>=1.0.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
