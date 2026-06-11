@@ -1,17 +1,23 @@
 from llm_skill_robot.robot.ur5_moveit_plan_backend import UR5MoveItPlanBackend
 from llm_skill_robot.robot.ur5_moveit_plan_backend import extract_joint_trajectory
 from llm_skill_robot.core.schemas import MotionPlanSummary
+from llm_skill_robot.core.trajectory_validator import TrajectoryValidator
 
 
 class FakeJointTrajectory:
     def __init__(self, joint_names=None, points=None):
         self.joint_names = joint_names or ["joint_1", "joint_2"]
-        self.points = points or [object(), object()]
+        self.points = [object(), object()] if points is None else points
 
 
 class FakeRobotTrajectory:
     def __init__(self, joint_trajectory):
         self.joint_trajectory = joint_trajectory
+
+
+class FakeEmptyMoveItPlanResult:
+    def __init__(self):
+        self.trajectory = FakeRobotTrajectory(FakeJointTrajectory(points=[]))
 
 
 class FakeDisplayTrajectory:
@@ -30,14 +36,28 @@ class MockRvizSimBackend(UR5MoveItPlanBackend):
 class FakeMoveIt2:
     def __init__(self):
         self.executed = None
+        self.moved_to_configuration = None
         self.waited = False
+        self.wait_result = True
+
+    def move_to_configuration(self, joint_positions):
+        self.moved_to_configuration = joint_positions
 
     def execute(self, joint_trajectory):
         self.executed = joint_trajectory
 
     def wait_until_executed(self):
         self.waited = True
+        return self.wait_result
+
+
+class EmptyPlanRvizSimBackend(UR5MoveItPlanBackend):
+    def _pymoveit2_interface_available(self) -> bool:
+        self._moveit2 = FakeMoveIt2()
         return True
+
+    def _call_pymoveit2_plan_api(self, target_positions):
+        return FakeEmptyMoveItPlanResult()
 
 
 def _rviz_sim_config():
@@ -116,6 +136,22 @@ def test_execution_blocked_for_unknown_plan_id():
 
     assert result["success"] is False
     assert "No cached plan" in result["message"]
+
+
+def test_empty_moveit_plan_falls_back_to_target_command_in_rviz_sim():
+    backend = EmptyPlanRvizSimBackend(
+        dry_run=False,
+        execution_mode="rviz_sim",
+        execution_config=_rviz_sim_config(),
+    )
+
+    result = backend.plan_to_named_target("home")
+
+    assert result["success"] is True
+    assert result["summary"]["num_trajectory_points"] == 0
+    assert result["summary"]["trajectory_preview"]["pymoveit2_target_command"] is True
+    validation = TrajectoryValidator({}).validate_motion_plan_summary(result["summary"])
+    assert validation["decision"] == "ALLOW"
 
 
 def test_execution_blocked_for_failed_cached_plan():
@@ -200,8 +236,40 @@ def test_simulated_execution_passes_joint_trajectory_to_pymoveit2():
     assert result["success"] is True
     assert result["output"]["command_type"] == "pymoveit2_joint_trajectory"
     assert result["output"]["trajectory_source"] == "cached_plan.joint_trajectory"
+    assert result["output"]["moveit_execution_succeeded"] is True
     assert moveit2.executed is joint_trajectory
     assert moveit2.waited is True
+
+
+def test_simulated_execution_reports_moveit_target_command_failure():
+    backend = UR5MoveItPlanBackend(
+        dry_run=True,
+        execution_mode="rviz_sim",
+        execution_config=_rviz_sim_config(),
+    )
+    moveit2 = FakeMoveIt2()
+    moveit2.wait_result = False
+    plan = backend._cache_pymoveit2_target_command(
+        plan_id="plan_target_command",
+        target="home",
+        target_positions=[0.0, -1.57, 1.57, -1.57, -1.57, 0.0],
+        velocity_scale=0.1,
+        acceleration_scale=0.1,
+        skill_id="move_to_named_target",
+        step_id=1,
+    )
+    backend._moveit2 = moveit2
+
+    result = backend.execute_cached_plan_simulated(
+        plan["plan_id"],
+        final_confirmed=True,
+        trajectory_validation_allowed=True,
+        trajectory_review_approved=True,
+    )
+
+    assert moveit2.moved_to_configuration == [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]
+    assert result["success"] is False
+    assert "not executed successfully" in result["message"]
 
 
 def test_display_trajectory_is_not_used_for_simulated_execution():

@@ -510,6 +510,21 @@ class UR5MoveItPlanBackend:
             target_pose=None,
             plan_result=plan_result,
         )
+        if (
+            self.execution_mode == "rviz_sim"
+            and summary.success
+            and summary.num_trajectory_points <= 0
+        ):
+            return self._cache_pymoveit2_target_command(
+                plan_id=plan_id,
+                target=target,
+                target_positions=target_positions,
+                velocity_scale=velocity_scale,
+                acceleration_scale=acceleration_scale,
+                skill_id=kwargs.get("skill_id", "move_to_named_target"),
+                step_id=kwargs.get("step_id"),
+            )
+
         entry = self._cache_plan(
             summary=summary,
             skill_id=kwargs.get("skill_id", "move_to_named_target"),
@@ -719,6 +734,7 @@ class UR5MoveItPlanBackend:
                 base_link_name=self.base_frame,
                 end_effector_name=self.ee_frame,
                 group_name=self.planning_group,
+                use_move_group_action=True,
             )
             return True
         except Exception as e:
@@ -748,12 +764,16 @@ class UR5MoveItPlanBackend:
             if not hasattr(self._moveit2, "move_to_configuration"):
                 raise RuntimeError("pymoveit2 MoveIt2 object has no move_to_configuration method.")
             self._moveit2.move_to_configuration(target_command["joint_positions"])
+            executed = True
             if hasattr(self._moveit2, "wait_until_executed"):
-                self._moveit2.wait_until_executed()
+                executed = bool(self._moveit2.wait_until_executed())
+            if not executed:
+                raise RuntimeError("MoveIt target command was not executed successfully.")
             return {
                 "simulated_execution": True,
                 "command_type": "pymoveit2_target_command",
                 "target_name": target_command["target_name"],
+                "moveit_execution_succeeded": executed,
             }
 
         extraction = extract_joint_trajectory(cached_plan)
@@ -770,12 +790,16 @@ class UR5MoveItPlanBackend:
         if not hasattr(self._moveit2, "execute"):
             raise RuntimeError("pymoveit2 MoveIt2 object has no execute method.")
         self._moveit2.execute(joint_trajectory)
+        executed = True
         if hasattr(self._moveit2, "wait_until_executed"):
-            self._moveit2.wait_until_executed()
+            executed = bool(self._moveit2.wait_until_executed())
+        if not executed:
+            raise RuntimeError("MoveIt joint trajectory was not executed successfully.")
         return {
             "simulated_execution": True,
             "command_type": "pymoveit2_joint_trajectory",
             "trajectory_source": extraction.source,
+            "moveit_execution_succeeded": executed,
         }
 
     @staticmethod

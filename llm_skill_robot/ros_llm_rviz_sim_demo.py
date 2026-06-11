@@ -17,15 +17,18 @@ from llm_skill_robot.core.schemas import ValidationDecision, VerificationDecisio
 from llm_skill_robot.core.skill_library import SkillLibrary
 from llm_skill_robot.core.trajectory_reviewer import TrajectoryReviewer
 from llm_skill_robot.core.trajectory_validator import TrajectoryValidator
-from llm_skill_robot.robot.mock_robot_backend import MockRobotBackend
+from llm_skill_robot.robot.robotiq_2f140_sim_backend import Robotiq2F140SimBackend
 from llm_skill_robot.robot.ur5_moveit_plan_backend import UR5MoveItPlanBackend
 from llm_skill_robot.ros_nl_rviz_sim_demo import (
     _audit_event,
-    _execute_gripper_step,
+    _create_gripper_joint_state_sim,
+    _load_gripper_config,
+    _print_gripper_step_result,
     _print_execution_report,
     _print_generated_plan,
     _print_verification_result,
     _run_motion_step,
+    execute_non_motion_skill,
 )
 from llm_skill_robot.ros_rviz_sim_execution_demo import _load_safety_config
 
@@ -135,40 +138,50 @@ def _execute_plan_steps(
     safety_config,
     audit_logger: AuditLogger,
 ) -> list:
-    mock_backend = MockRobotBackend(known_named_targets=["home", "observe", "pickup", "place"])
+    gripper_joint_state_sim = _create_gripper_joint_state_sim(node)
+    gripper_backend = Robotiq2F140SimBackend(
+        _load_gripper_config(),
+        joint_state_sim=gripper_joint_state_sim,
+    )
     trajectory_validator = TrajectoryValidator(safety_config)
     trajectory_reviewer = TrajectoryReviewer()
     step_results = []
 
-    for step in plan.steps:
-        if step.skill_id == "move_to_named_target":
-            result = _run_motion_step(
-                step=step,
-                backend=backend,
-                node=node,
-                execution_config=execution_config,
-                trajectory_validator=trajectory_validator,
-                trajectory_reviewer=trajectory_reviewer,
-                audit_logger=audit_logger,
-            )
-        else:
-            result = _execute_gripper_step(step, mock_backend)
-            print("\nSimulated Non-Motion Step:")
-            print(f"Step {step.step_id}: {result['message']}")
-            _audit_event(
-                audit_logger,
-                "mock_step_executed",
-                {
-                    "step_id": step.step_id,
-                    "skill_id": step.skill_id,
-                    "decision": "SUCCESS" if result["success"] else "FAILED",
-                    "message": result["message"],
-                    "result": result,
-                },
-            )
-        step_results.append(result)
-        if not result.get("success", False):
-            break
+    try:
+        for step in plan.steps:
+            if step.skill_id == "move_to_named_target":
+                result = _run_motion_step(
+                    step=step,
+                    backend=backend,
+                    node=node,
+                    execution_config=execution_config,
+                    trajectory_validator=trajectory_validator,
+                    trajectory_reviewer=trajectory_reviewer,
+                    audit_logger=audit_logger,
+                )
+            else:
+                result = execute_non_motion_skill(step, gripper_backend, context={})
+                _print_gripper_step_result(result)
+                _audit_event(
+                    audit_logger,
+                    "gripper_skill_executed",
+                    {
+                        "step_id": step.step_id,
+                        "skill_id": step.skill_id,
+                        "parameters": dict(step.parameters),
+                        "decision": "SUCCESS" if result["success"] else "FAILED",
+                        "message": result["message"],
+                        "result": result,
+                        "mode": "rviz_sim",
+                        "real_gripper_enabled": False,
+                    },
+                )
+            step_results.append(result)
+            if not result.get("success", False):
+                break
+    finally:
+        if gripper_joint_state_sim is not None:
+            gripper_joint_state_sim.stop()
 
     return step_results
 

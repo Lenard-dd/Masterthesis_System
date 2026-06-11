@@ -155,3 +155,32 @@ def test_prompt_includes_default_motion_scales_and_fake_response_uses_them():
     assert '"acceleration_scale_default": 0.03' in prompt
     assert plan.steps[0].parameters["velocity_scale"] == 0.03
     assert plan.steps[0].parameters["acceleration_scale"] == 0.03
+
+
+def test_prompt_includes_robotiq_gripper_rules():
+    client = FakeLLMClient(
+        [
+            """
+            {
+              "task": "open gripper",
+              "steps": [
+                {
+                  "step_id": 1,
+                  "skill_id": "open_gripper",
+                  "description": "Open gripper",
+                  "parameters": {}
+                }
+              ]
+            }
+            """
+        ]
+    )
+    generator = LLMPlanGenerator(client)
+
+    generator.generate_plan("open gripper", available_skills=["open_gripper"])
+    prompt = client.messages[0][1]["content"]
+
+    assert '"type": "robotiq_2f_140"' in prompt
+    assert '"max_width_m": 0.14' in prompt
+    assert "set_gripper_width" in prompt
+    assert "Do not generate raw gripper commands" in prompt

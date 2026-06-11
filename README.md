@@ -106,6 +106,52 @@ export OPENAI_API_KEY=...
 ros2 run llm_skill_robot ros-llm-rviz-sim-demo
 ```
 
+## Unified UR5 + Robotiq MoveIt/RViz Flow
+
+Use this flow when you want the UR5 arm and Robotiq 2F-140 gripper to appear in the same MoveIt/RViz model. This remains RViz/fake-hardware only: no real Robotiq driver is connected, no real gripper commands are published, and `real_gripper_enabled` stays `false`.
+
+Build the updated packages:
+
+```bash
+cd ~/dev_ws
+source /opt/ros/humble/setup.zsh
+colcon build --packages-select ur5_robotiq_description ur5_robotiq_moveit_config llm_skill_robot --symlink-install
+source install/setup.zsh
+```
+
+Terminal 1 starts UR fake hardware with the combined UR5 + Robotiq robot description:
+
+```bash
+ros2 launch ur_robot_driver ur_control.launch.py \
+  ur_type:=ur5 \
+  robot_ip:=192.168.56.101 \
+  use_fake_hardware:=true \
+  launch_rviz:=false \
+  description_package:=ur5_robotiq_description \
+  description_file:=ur5_robotiq_2f140.urdf.xacro
+```
+
+Terminal 2 starts MoveIt and RViz with the matching combined SRDF:
+
+```bash
+ros2 launch ur5_robotiq_moveit_config ur5_robotiq_moveit.launch.py
+```
+
+Terminal 3 runs the demo. Arm motion continues through the existing MoveIt/RViz fake-hardware path, while gripper skills publish the simulated `robotiq_finger_joint` state for RViz visualization:
+
+```bash
+ros2 run llm_skill_robot ros-nl-rviz-sim-demo
+```
+
+For LLM-generated plans:
+
+```bash
+export OPENAI_API_KEY=...
+ros2 run llm_skill_robot ros-llm-rviz-sim-demo
+```
+
+Do not run `joint_state_publisher_gui` at the same time for `robotiq_finger_joint`; duplicate `/joint_states` publishers can make RViz flicker or ignore the `open_gripper`, `close_gripper`, and `set_gripper_width` updates.
+
 Use the provider-selectable natural language model interface directly in Python:
 
 ```python
@@ -192,6 +238,92 @@ Use this checklist when recording or documenting the thesis Milestone 1 demo:
 - Give final confirmation only after RViz inspection.
 - Confirm the Execution Report says `Mode: rviz_sim`.
 - Save or reference the printed audit log path. The audit log should include `plan_generated`, `plan_verified`, `human_validated`, `motion_planned`, `trajectory_validated`, `trajectory_reviewed`, `visual_preview_published`, `final_confirmed`, and `simulated_execution_result`.
+
+## Robotiq 2F-140 Gripper Skills
+
+The Robotiq 2F-140 gripper skills are currently simulation-only and are intended for planning, verification, and RViz/fake-hardware flows. The gripper configuration lives in `config/gripper.yaml`, with `control_mode: rviz_sim` and `real_gripper_enabled: false`.
+
+Available gripper skills are `open_gripper`, `close_gripper`, `set_gripper_width`, and `get_gripper_state`. Real gripper execution remains disabled: this project does not connect to the Robotiq driver or publish real gripper commands in this step.
+
+## Robotiq RViz Joint Diagnostics
+
+Before trying to animate the Robotiq 2F-140 in RViz, inspect the joint names being published on `/joint_states`:
+
+```bash
+cd ~/dev_ws
+source /opt/ros/humble/setup.zsh
+colcon build --packages-select llm_skill_robot --symlink-install
+source install/setup.zsh
+ros2 run llm_skill_robot ros-check-gripper-model
+```
+
+The diagnostic only reads `/joint_states`; it does not move the robot or publish gripper commands. It prints joints containing keywords such as `robotiq`, `finger`, `gripper`, `knuckle`, `inner`, or `outer`.
+
+Use the printed joint names to fill `config/gripper_joint_mapping.yaml`:
+
+```yaml
+gripper_joint_mapping:
+  enabled: true
+  publish_topic: /joint_states
+  publish_rate_hz: 20.0
+  mode: rviz_sim
+  real_gripper_enabled: false
+  joint_names:
+    - robotiq_finger_joint
+  open_positions:
+    robotiq_finger_joint: 0.0
+  closed_positions:
+    robotiq_finger_joint: 0.7
+  max_width_m: 0.14
+  min_width_m: 0.0
+```
+
+The currently detected active Robotiq 2F-140 joint is:
+
+- `robotiq_finger_joint`
+
+The other Robotiq finger and knuckle joints are mimic joints in the xacro model, so they are not shown as separate sliders in `joint_state_publisher_gui`. Publishing only `robotiq_finger_joint` lets `robot_state_publisher` compute the mimic joint transforms.
+
+Only enable simulated gripper joint state publishing when `joint_state_publisher_gui` or another node is not already publishing the same gripper joints. Publishing the same joint names from two nodes can cause RViz flicker or inconsistent gripper poses.
+
+## Robotiq 2F-140 RViz Visual Gripper Control
+
+This is RViz/fake hardware visualization only. It does not connect to, command, or enable real Robotiq hardware.
+
+First launch the UR5 + Robotiq visualization:
+
+```bash
+cd ~/dev_ws
+source /opt/ros/humble/setup.zsh
+source install/setup.zsh
+ros2 launch ur5_robotiq_description view_ur5_robotiq.launch.py use_placeholder_gripper:=false
+```
+
+Then check the detected gripper joints:
+
+```bash
+ros2 run llm_skill_robot ros-check-gripper-model
+```
+
+Then run the interactive RViz gripper visual demo:
+
+```bash
+ros2 run llm_skill_robot ros-gripper-rviz-demo
+```
+
+Interactive commands:
+
+- `o` = open
+- `c` = close
+- `w` = set width in meters
+- `s` = state
+- `q` = quit
+
+The demo publishes only this active Robotiq gripper joint to `/joint_states`:
+
+- `robotiq_finger_joint`
+
+If RViz does not update, check `config/gripper_joint_mapping.yaml` against the output of `ros-check-gripper-model`. If RViz flickers or ignores updates, close `joint_state_publisher_gui` or avoid duplicate joint state publishers for `robotiq_finger_joint`. If open and close move in the wrong direction, adjust `closed_positions` in `config/gripper_joint_mapping.yaml`.
 
 ## Read UR5 Joint State
 

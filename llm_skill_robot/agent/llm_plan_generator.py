@@ -80,6 +80,21 @@ class LLMPlanGenerator(BasePlanGenerator):
                 "acceleration_scale_max": 0.1,
                 "acceleration_scale_default": self.default_acceleration_scale,
             },
+            "gripper_rules": {
+                "type": "robotiq_2f_140",
+                "max_width_m": 0.14,
+                "allowed_skill_ids": [
+                    "open_gripper",
+                    "close_gripper",
+                    "set_gripper_width",
+                    "get_gripper_state",
+                ],
+                "instruction": (
+                    "Use open_gripper, close_gripper, or set_gripper_width for "
+                    "Robotiq 2F-140 gripper actions. Do not generate raw gripper "
+                    "commands, ROS topics, driver calls, or hardware commands."
+                ),
+            },
             "output_schema": {
                 "task": "string",
                 "steps": [
@@ -97,6 +112,7 @@ class LLMPlanGenerator(BasePlanGenerator):
                 "Do not output Python code.",
                 "Do not output ROS commands.",
                 "Do not output raw trajectories.",
+                "Do not generate raw gripper commands.",
                 "Use only skill_id values from available_skills.",
             ],
         }

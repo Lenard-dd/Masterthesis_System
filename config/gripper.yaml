@@ -1,0 +1,17 @@
+gripper:
+  type: robotiq_2f_140
+  max_width_m: 0.14
+  min_width_m: 0.0
+  default_open_width_m: 0.14
+  default_close_width_m: 0.0
+  default_speed_mps: 0.03
+  default_force_N: 20.0
+  control_mode: rviz_sim
+  real_gripper_enabled: false
+  expected_joint_keywords:
+    - robotiq
+    - finger
+    - gripper
+  expected_base_frames:
+    - robotiq_2f140_base_link
+    - robotiq_arg2f_base_link

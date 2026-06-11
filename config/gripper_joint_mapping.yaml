@@ -1,0 +1,20 @@
+gripper_joint_mapping:
+  enabled: true
+  publish_topic: /joint_states
+  publish_rate_hz: 20.0
+  mode: rviz_sim
+  real_gripper_enabled: false
+
+  # The Robotiq xacro exposes one active joint. The remaining finger/knuckle
+  # joints are mimic joints computed by robot_state_publisher.
+  joint_names:
+    - robotiq_finger_joint
+
+  open_positions:
+    robotiq_finger_joint: 0.0
+
+  closed_positions:
+    robotiq_finger_joint: 0.7
+
+  max_width_m: 0.14
+  min_width_m: 0.0

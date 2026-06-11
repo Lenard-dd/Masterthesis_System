@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 import sys
 from typing import Any, Dict, List
 
+import yaml
+
 from llm_skill_robot.agent.mock_plan_generator import MockPlanGenerator, PlanGenerationError
 from llm_skill_robot.core.audit_logger import AuditLogger
 from llm_skill_robot.core.execution_mode import is_execution_allowed, load_execution_config
@@ -15,13 +17,21 @@ from llm_skill_robot.core.skill_library import SkillLibrary
 from llm_skill_robot.core.trajectory_reviewer import TrajectoryReviewer
 from llm_skill_robot.core.trajectory_validator import TrajectoryValidator
 from llm_skill_robot.core.trajectory_visualizer import TrajectoryVisualizer
-from llm_skill_robot.robot.mock_robot_backend import MockRobotBackend
+from llm_skill_robot.robot.robotiq_2f140_sim_backend import Robotiq2F140SimBackend
+from llm_skill_robot.robot.robotiq_2f140_joint_state_sim import Robotiq2F140JointStateSim
 from llm_skill_robot.robot.ur5_moveit_plan_backend import UR5MoveItPlanBackend
 from llm_skill_robot.ros_rviz_sim_execution_demo import _load_safety_config
+from llm_skill_robot.utils import get_config_dir
 
 NL_RVIZ_SIM_WARNING = (
     "NATURAL LANGUAGE RVIZ_SIM DEMO. Real robot execution is disabled."
 )
+GRIPPER_SKILL_IDS = {
+    "open_gripper",
+    "close_gripper",
+    "set_gripper_width",
+    "get_gripper_state",
+}
 
 
 def _audit_event(audit_logger: AuditLogger, event: str, payload: Dict[str, Any]) -> None:
@@ -79,23 +89,84 @@ def _print_trajectory_validation(result: Dict[str, Any]) -> None:
         print(f"Warnings: {result['warnings']}")
 
 
-def _execute_gripper_step(step, mock_backend: MockRobotBackend) -> Dict[str, Any]:
-    if step.skill_id == "open_gripper":
-        result = mock_backend.open_gripper()
-    elif step.skill_id == "close_gripper":
-        result = mock_backend.close_gripper()
-    else:
+def _load_gripper_config() -> Dict[str, Any]:
+    config_file = get_config_dir() / "gripper.yaml"
+    if not config_file.exists():
+        return {}
+    with open(config_file, "r") as f:
+        return yaml.safe_load(f) or {}
+
+
+def _load_gripper_joint_mapping_config() -> Dict[str, Any]:
+    config_file = get_config_dir() / "gripper_joint_mapping.yaml"
+    if not config_file.exists():
+        return {}
+    with open(config_file, "r") as f:
+        return yaml.safe_load(f) or {}
+
+
+def _create_gripper_joint_state_sim(node) -> Robotiq2F140JointStateSim | None:
+    config = _load_gripper_joint_mapping_config()
+    mapping = config.get("gripper_joint_mapping", {})
+    if not mapping.get("enabled", False):
+        return None
+
+    joint_names = mapping.get("joint_names", []) or []
+    if joint_names:
+        print("\nWarning: RViz gripper joint-state simulation is enabled.")
+        print("Only the configured Robotiq gripper joints will be published:")
+        for joint_name in joint_names:
+            print(f"- {joint_name}")
+        print(
+            "If joint_state_publisher_gui is also publishing these joints, "
+            "RViz may flicker or ignore updates. Close joint_state_publisher_gui "
+            "or disable duplicate publishing."
+        )
+
+    joint_state_sim = Robotiq2F140JointStateSim(node=node, config=config)
+    joint_state_sim.start_periodic_publishing()
+    return joint_state_sim
+
+
+def execute_non_motion_skill(
+    step,
+    gripper_backend: Robotiq2F140SimBackend,
+    context: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    del context
+    if step.skill_id not in GRIPPER_SKILL_IDS:
         result = {
             "success": False,
             "message": f"Unsupported non-motion skill in this demo: {step.skill_id}",
             "output": {},
         }
+    else:
+        backend_method = getattr(gripper_backend, step.skill_id)
+        result = backend_method(**dict(step.parameters))
+
     return {
         "step_id": step.step_id,
         "skill_id": step.skill_id,
-        "mode": "mock_sim",
+        "parameters": dict(step.parameters),
+        "mode": result.get("output", {}).get("mode", "rviz_sim"),
+        "real_gripper_enabled": result.get("output", {}).get("real_gripper_enabled", False),
         **result,
     }
+
+
+def _print_gripper_step_result(result: Dict[str, Any]) -> None:
+    output = result.get("output", {})
+    print("\nGripper Step:")
+    print(f"Skill: {result.get('skill_id')}")
+    print(f"Mode: {output.get('mode', result.get('mode', 'rviz_sim'))}")
+    print(f"Result: {'SUCCESS' if result.get('success') else 'FAILED'}")
+    if "current_width_m" in output:
+        print(f"Current width: {output['current_width_m']:.2f} m")
+    print(
+        "Real gripper enabled: "
+        f"{str(output.get('real_gripper_enabled', False)).lower()}"
+    )
+    print(f"Message: {result.get('message')}")
 
 
 def _run_motion_step(
@@ -356,7 +427,11 @@ def main() -> None:
             mode=execution_mode,
             execution_config=execution_config,
         )
-        mock_backend = MockRobotBackend(known_named_targets=["home", "observe", "pickup", "place"])
+        gripper_joint_state_sim = _create_gripper_joint_state_sim(node)
+        gripper_backend = Robotiq2F140SimBackend(
+            _load_gripper_config(),
+            joint_state_sim=gripper_joint_state_sim,
+        )
         trajectory_validator = TrajectoryValidator(safety_config)
         trajectory_reviewer = TrajectoryReviewer()
         step_results = []
@@ -373,18 +448,20 @@ def main() -> None:
                     audit_logger=audit_logger,
                 )
             else:
-                result = _execute_gripper_step(step, mock_backend)
-                print(f"\nSimulated Non-Motion Step:")
-                print(f"Step {step.step_id}: {result['message']}")
+                result = execute_non_motion_skill(step, gripper_backend, context={})
+                _print_gripper_step_result(result)
                 _audit_event(
                     audit_logger,
-                    "mock_step_executed",
+                    "gripper_skill_executed",
                     {
                         "step_id": step.step_id,
                         "skill_id": step.skill_id,
+                        "parameters": dict(step.parameters),
                         "decision": "SUCCESS" if result["success"] else "FAILED",
                         "message": result["message"],
                         "result": result,
+                        "mode": "rviz_sim",
+                        "real_gripper_enabled": False,
                     },
                 )
             step_results.append(result)
@@ -417,6 +494,8 @@ def main() -> None:
         sys.exit(1)
     finally:
         print(f"\nAudit log: {audit_logger.log_file.resolve()}")
+        if "gripper_joint_state_sim" in locals() and gripper_joint_state_sim is not None:
+            gripper_joint_state_sim.stop()
         if backend is not None:
             backend.shutdown()
         if node is not None:

@@ -1,0 +1,10 @@
+skill_id: "get_gripper_state"
+name: "Get Gripper State"
+description: "Observe the Robotiq 2F-140 gripper state for planning and verification"
+parameters: []
+preconditions:
+  - "gripper_available"
+effects:
+  - "gripper_state_observed"
+execution:
+  backend_method: "get_gripper_state"
