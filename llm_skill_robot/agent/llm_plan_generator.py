@@ -95,6 +95,15 @@ class LLMPlanGenerator(BasePlanGenerator):
                     "commands, ROS topics, driver calls, or hardware commands."
                 ),
             },
+            "perception_rules": {
+                "allowed_skill_ids": ["detect_object"],
+                "instruction": (
+                    "Use detect_object before pick_object when an object pose is "
+                    "required. detect_object requires a natural-language query "
+                    'such as "red cube", "blue cup", or "object on the table". '
+                    "Do not invent object poses or create raw camera/SAM3 commands."
+                ),
+            },
             "output_schema": {
                 "task": "string",
                 "steps": [

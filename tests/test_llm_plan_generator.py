@@ -184,3 +184,36 @@ def test_prompt_includes_robotiq_gripper_rules():
     assert '"max_width_m": 0.14' in prompt
     assert "set_gripper_width" in prompt
     assert "Do not generate raw gripper commands" in prompt
+
+
+def test_prompt_includes_perception_rules_for_object_pose():
+    client = FakeLLMClient(
+        [
+            """
+            {
+              "task": "detect red cube",
+              "steps": [
+                {
+                  "step_id": 1,
+                  "skill_id": "detect_object",
+                  "description": "Detect red cube",
+                  "parameters": {
+                    "query": "red cube",
+                    "min_confidence": 0.5,
+                    "require_pose": true
+                  }
+                }
+              ]
+            }
+            """
+        ]
+    )
+    generator = LLMPlanGenerator(client)
+
+    generator.generate_plan("pick up the red cube", available_skills=["detect_object", "pick_object"])
+    prompt = client.messages[0][1]["content"]
+
+    assert "detect_object before pick_object" in prompt
+    assert "natural-language query" in prompt
+    assert "red cube" in prompt
+    assert "Do not invent object poses" in prompt

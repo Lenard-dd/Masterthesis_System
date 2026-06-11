@@ -1,0 +1,23 @@
+skill_id: "detect_object"
+name: "Detect Object"
+description: "Detect an object in the scene using the perception pipeline."
+parameters:
+  - name: "query"
+    type: "string"
+    required: true
+  - name: "min_confidence"
+    type: "float"
+    required: false
+    default: 0.5
+    min_value: 0.0
+    max_value: 1.0
+  - name: "require_pose"
+    type: "bool"
+    required: false
+    default: true
+preconditions:
+  - "perception_available"
+effects:
+  - "object_detection_attempted"
+execution:
+  backend_method: "detect_object"
