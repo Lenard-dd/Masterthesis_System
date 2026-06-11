@@ -42,6 +42,28 @@ python -m llm_skill_robot.moveit_plan_demo
 
 `pymoveit2` is the preferred MoveIt Python interface for ROS 2 Humble demos in this project.
 
+## Perception Skeleton Demo
+
+Exercise the perception pipeline without camera hardware:
+
+```bash
+cd ~/dev_ws/src/LLM_Ros
+source .venv/bin/activate
+python -m llm_skill_robot.perception_demo
+```
+
+Run the same demo through the ROS 2 entry point:
+
+```bash
+cd ~/dev_ws
+source /opt/ros/humble/setup.zsh
+colcon build --packages-select llm_skill_robot --symlink-install
+source install/setup.zsh
+ros2 run llm_skill_robot perception-demo
+```
+
+Expected current output is `NOT_AVAILABLE` because D435i/SAM3 is not connected yet.
+
 ## Natural Language Plan Demo
 
 Convert a natural-language instruction into a structured `RobotPlan`, verify it, and ask for human approval. This demo does not call a real LLM API, MoveIt, or robot execution.

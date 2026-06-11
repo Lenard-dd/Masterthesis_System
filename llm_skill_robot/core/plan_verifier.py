@@ -48,20 +48,35 @@ class PlanVerifier:
                     ):
                         continue
                     if param.required:
-                        reasons.append(f"Missing required parameter '{param.name}' for skill '{step.skill_id}'")
+                        reasons.append(
+                            f"Missing required parameter '{param.name}' "
+                            f"for skill '{step.skill_id}'"
+                        )
                     continue
 
                 # Check type
                 if not self.check_parameter_type(value, param.type):
-                    reasons.append(f"Invalid type for parameter '{param.name}' in skill '{step.skill_id}': expected {param.type}")
+                    reasons.append(
+                        f"Invalid type for parameter '{param.name}' in "
+                        f"skill '{step.skill_id}': expected {param.type}"
+                    )
                     continue
                 # Check allowed values
                 if param.allowed_values and value not in param.allowed_values:
-                    reasons.append(f"Invalid value '{value}' for parameter '{param.name}' in skill '{step.skill_id}': allowed {param.allowed_values}")
+                    reasons.append(
+                        f"Invalid value '{value}' for parameter '{param.name}' "
+                        f"in skill '{step.skill_id}': allowed {param.allowed_values}"
+                    )
                 if param.min_value is not None and value < param.min_value:
-                    reasons.append(f"Invalid value '{value}' for parameter '{param.name}' in skill '{step.skill_id}': minimum {param.min_value}")
+                    reasons.append(
+                        f"Invalid value '{value}' for parameter '{param.name}' "
+                        f"in skill '{step.skill_id}': minimum {param.min_value}"
+                    )
                 if param.max_value is not None and value > param.max_value:
-                    reasons.append(f"Invalid value '{value}' for parameter '{param.name}' in skill '{step.skill_id}': maximum {param.max_value}")
+                    reasons.append(
+                        f"Invalid value '{value}' for parameter '{param.name}' "
+                        f"in skill '{step.skill_id}': maximum {param.max_value}"
+                    )
 
             if step.skill_id == "detect_object":
                 self._verify_detect_object_context(context, warnings)
@@ -105,26 +120,46 @@ class PlanVerifier:
             return step.parameters.get("target")
         return None
 
-    def _verify_detect_object_context(self, context: Dict[str, Any], warnings: list[str]) -> None:
+    def _verify_detect_object_context(
+        self,
+        context: Dict[str, Any],
+        warnings: list[str],
+    ) -> None:
         if not context.get("perception_available", False):
             warnings.append(
                 "Perception backend is not available; detect_object may fail at execution time."
             )
 
-    def _verify_pick_object_context(self, step, context: Dict[str, Any], reasons: list[str]) -> None:
+    def _verify_pick_object_context(
+        self,
+        step,
+        context: Dict[str, Any],
+        reasons: list[str],
+    ) -> None:
         object_id = step.parameters.get("object_id")
         query = step.parameters.get("query")
         if object_id is None and query is None:
             return
+        if context.get("skip_perception_scene_checks", False):
+            return
 
         scene = self._scene_from_context(context)
         if scene is None or not scene.objects:
-            reasons.append("Cannot verify pick_object because no detected scene object is available.")
+            reasons.append(
+                "Cannot verify pick_object because no detected scene object is available."
+            )
             return
 
-        scene_object = self._find_scene_object(scene, object_id=object_id, query=query)
+        scene_object = self._find_scene_object(
+            scene,
+            object_id=object_id,
+            query=query,
+        )
         if scene_object is None:
-            reasons.append("Cannot verify pick_object because the requested object is not in the detected scene.")
+            reasons.append(
+                "Cannot verify pick_object because the requested object is not "
+                "in the detected scene."
+            )
             return
 
         if not scene_object.pose_available:
@@ -133,9 +168,13 @@ class PlanVerifier:
             reasons.append("Object is not marked as graspable.")
 
         min_confidence = step.parameters.get("min_confidence")
-        if min_confidence is not None and scene_object.confidence < float(min_confidence):
+        if (
+            min_confidence is not None
+            and scene_object.confidence < float(min_confidence)
+        ):
             reasons.append(
-                f"Object confidence {scene_object.confidence} is below required minimum {min_confidence}."
+                f"Object confidence {scene_object.confidence} is below "
+                f"required minimum {min_confidence}."
             )
 
     def _verify_place_object_context(
@@ -148,13 +187,21 @@ class PlanVerifier:
         target_id = step.parameters.get("target_id")
         if target_id is None:
             return
+        if context.get("skip_perception_scene_checks", False):
+            return
 
         scene = self._scene_from_context(context)
         if scene is None or not scene.objects:
-            warnings.append("Cannot fully verify place_object because no detected scene object is available.")
+            warnings.append(
+                "Cannot fully verify place_object because no detected scene "
+                "object is available."
+            )
             return
         if scene.find_by_id(target_id) is None and not scene.find_by_label(target_id):
-            reasons.append("Cannot verify place_object because target_id is not in the detected scene.")
+            reasons.append(
+                "Cannot verify place_object because target_id is not in the "
+                "detected scene."
+            )
 
     @staticmethod
     def _scene_from_context(context: Dict[str, Any]) -> SceneModel | None:

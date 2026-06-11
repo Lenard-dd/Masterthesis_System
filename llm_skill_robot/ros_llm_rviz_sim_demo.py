@@ -19,15 +19,21 @@ from llm_skill_robot.core.trajectory_reviewer import TrajectoryReviewer
 from llm_skill_robot.core.trajectory_validator import TrajectoryValidator
 from llm_skill_robot.robot.robotiq_2f140_sim_backend import Robotiq2F140SimBackend
 from llm_skill_robot.robot.ur5_moveit_plan_backend import UR5MoveItPlanBackend
+from llm_skill_robot.perception.perception_pipeline import PerceptionPipeline
 from llm_skill_robot.ros_nl_rviz_sim_demo import (
+    OBJECT_RELATED_SKILL_IDS,
+    PERCEPTION_SKILL_IDS,
     _audit_event,
+    _audit_perception_result,
     _create_gripper_joint_state_sim,
     _load_gripper_config,
+    _print_perception_step_result,
     _print_gripper_step_result,
     _print_execution_report,
     _print_generated_plan,
     _print_verification_result,
     _run_motion_step,
+    _verify_object_step_for_execution,
     execute_non_motion_skill,
 )
 from llm_skill_robot.ros_rviz_sim_execution_demo import _load_safety_config
@@ -78,7 +84,10 @@ def _generate_and_verify_plan(
         },
     )
 
-    verification_result = plan_verifier.verify_plan(plan)
+    verification_result = plan_verifier.verify_plan(
+        plan,
+        context={"skip_perception_scene_checks": True},
+    )
     _print_verification_result(verification_result)
     _audit_event(
         audit_logger,
@@ -114,7 +123,10 @@ def _generate_and_verify_plan(
         verification_result=verification_result,
     )
     _print_generated_plan(repaired_plan)
-    repaired_verification = plan_verifier.verify_plan(repaired_plan)
+    repaired_verification = plan_verifier.verify_plan(
+        repaired_plan,
+        context={"skip_perception_scene_checks": True},
+    )
     _print_verification_result(repaired_verification)
     _audit_event(
         audit_logger,
@@ -143,13 +155,50 @@ def _execute_plan_steps(
         _load_gripper_config(),
         joint_state_sim=gripper_joint_state_sim,
     )
+    skill_library = SkillLibrary()
+    perception_pipeline = PerceptionPipeline()
+    execution_context = {
+        "scene": perception_pipeline.get_latest_scene(),
+        "perception_available": False,
+    }
     trajectory_validator = TrajectoryValidator(safety_config)
     trajectory_reviewer = TrajectoryReviewer()
     step_results = []
 
     try:
         for step in plan.steps:
-            if step.skill_id == "move_to_named_target":
+            if step.skill_id in OBJECT_RELATED_SKILL_IDS:
+                result = _verify_object_step_for_execution(
+                    step=step,
+                    skill_library=skill_library,
+                    execution_context=execution_context,
+                )
+                if result is None:
+                    result = {
+                        "success": False,
+                        "step_id": step.step_id,
+                        "skill_id": step.skill_id,
+                        "parameters": dict(step.parameters),
+                        "message": (
+                            f"{step.skill_id} execution is not implemented in RViz sim "
+                            "without a verified perception-backed object pose."
+                        ),
+                        "mode": "rviz_sim",
+                        "output": {"mode": "rviz_sim"},
+                    }
+                _audit_event(
+                    audit_logger,
+                    "object_skill_verified",
+                    {
+                        "step_id": step.step_id,
+                        "skill_id": step.skill_id,
+                        "parameters": dict(step.parameters),
+                        "decision": "SUCCESS" if result["success"] else "BLOCK",
+                        "message": result["message"],
+                        "result": result,
+                    },
+                )
+            elif step.skill_id == "move_to_named_target":
                 result = _run_motion_step(
                     step=step,
                     backend=backend,
@@ -160,24 +209,33 @@ def _execute_plan_steps(
                     audit_logger=audit_logger,
                 )
             else:
-                result = execute_non_motion_skill(step, gripper_backend, context={})
-                _print_gripper_step_result(result)
-                _audit_event(
-                    audit_logger,
-                    "gripper_skill_executed",
-                    {
-                        "step_id": step.step_id,
-                        "skill_id": step.skill_id,
-                        "parameters": dict(step.parameters),
-                        "decision": "SUCCESS" if result["success"] else "FAILED",
-                        "message": result["message"],
-                        "result": result,
-                        "mode": "rviz_sim",
-                        "real_gripper_enabled": False,
-                    },
+                result = execute_non_motion_skill(
+                    step,
+                    gripper_backend,
+                    context=execution_context,
+                    perception_pipeline=perception_pipeline,
                 )
+                if step.skill_id in PERCEPTION_SKILL_IDS:
+                    _print_perception_step_result(result)
+                    _audit_perception_result(audit_logger, step, result)
+                else:
+                    _print_gripper_step_result(result)
+                    _audit_event(
+                        audit_logger,
+                        "gripper_skill_executed",
+                        {
+                            "step_id": step.step_id,
+                            "skill_id": step.skill_id,
+                            "parameters": dict(step.parameters),
+                            "decision": "SUCCESS" if result["success"] else "FAILED",
+                            "message": result["message"],
+                            "result": result,
+                            "mode": "rviz_sim",
+                            "real_gripper_enabled": False,
+                        },
+                    )
             step_results.append(result)
-            if not result.get("success", False):
+            if not result.get("success", False) and step.skill_id not in PERCEPTION_SKILL_IDS:
                 break
     finally:
         if gripper_joint_state_sim is not None:
@@ -258,12 +316,19 @@ def main() -> None:
         )
 
         if verification_result.decision != VerificationDecision.ALLOW:
-            print("\nPlan blocked by verification. No planning or execution requested.")
+            print(
+                "\nPlan blocked by verification. "
+                "No planning or execution requested."
+            )
             return
 
         validation_result = HumanValidator().validate_plan(plan)
         print("\nHuman Validation:")
-        print("approved" if validation_result.decision == ValidationDecision.APPROVE else validation_result.decision.value.lower())
+        print(
+            "approved"
+            if validation_result.decision == ValidationDecision.APPROVE
+            else validation_result.decision.value.lower()
+        )
         _audit_event(
             audit_logger,
             "human_validated",
@@ -296,7 +361,11 @@ def main() -> None:
             audit_logger,
             "llm_rviz_sim_execution_report",
             {
-                "decision": "SUCCESS" if all(r.get("success", False) for r in step_results) else "FAILED",
+                "decision": (
+                    "SUCCESS"
+                    if all(r.get("success", False) for r in step_results)
+                    else "FAILED"
+                ),
                 "message": "LLM RViz simulation demo completed.",
                 "step_results": step_results,
             },
