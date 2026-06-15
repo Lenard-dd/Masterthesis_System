@@ -64,6 +64,25 @@ ros2 run llm_skill_robot perception-demo
 
 Expected current output is `NOT_AVAILABLE` because D435i/SAM3 is not connected yet.
 
+## D435i ROS 2 Camera Backend
+
+Launch the RealSense D435i with RGB-D sync and aligned depth enabled:
+
+```bash
+ros2 launch realsense2_camera rs_launch.py enable_rgbd:=true enable_sync:=true align_depth.enable:=true enable_color:=true enable_depth:=true
+```
+
+The perception config reads these expected topics from `config/perception.yaml`:
+
+- RGB image: `/camera/camera/color/image_raw`
+- aligned depth image: `/camera/camera/aligned_depth_to_color/image_raw`
+- camera info: `/camera/camera/color/camera_info`
+
+The D435i backend saves the latest RGB frame to
+`data/perception_runtime/latest_rgb.png` and passes that path to the SAM3
+subprocess adapter. Normal unit tests use mocks and do not require a running
+ROS graph or a live camera.
+
 ## SAM3 Conda Subprocess Inference
 
 SAM3 is expected to live in a separate conda environment named `sam3`.
