@@ -1,0 +1,29 @@
+perception:
+  mode: d435i_sam3
+  detector: sam3_subprocess
+  min_confidence_default: 0.5
+  require_pose_for_pick: true
+  target_frame: base_link
+  require_base_link_pose_for_pick: true
+
+d435i:
+  rgb_topic: /camera/camera/color/image_raw
+  depth_topic: /camera/camera/aligned_depth_to_color/image_raw
+  camera_info_topic: /camera/camera/color/camera_info
+  rgb_frame: camera_color_optical_frame
+  depth_frame: camera_color_optical_frame
+  wait_timeout_sec: 5.0
+  runtime_dir: data/perception_runtime
+
+sam3_subprocess:
+  enabled: true
+  conda_env: sam3
+  conda_executable: conda
+  runner_script: scripts/sam3_runner.py
+  timeout_sec: 60.0
+  output_dir: data/perception_outputs
+  save_debug_overlay: true
+  save_mask_images: true
+  device: auto
+  checkpoint_path: ""
+  model_config: ""

@@ -7,6 +7,7 @@ from llm_skill_robot.perception.scene_model import (
     SceneModel,
     SceneObject,
 )
+from llm_skill_robot.perception.sam3_subprocess_adapter import SAM3SubprocessAdapter
 from llm_skill_robot.perception.unavailable_perception_backend import (
     UnavailablePerceptionBackend,
 )
@@ -19,5 +20,6 @@ __all__ = [
     "PerceptionSkillBackend",
     "SceneModel",
     "SceneObject",
+    "SAM3SubprocessAdapter",
     "UnavailablePerceptionBackend",
 ]

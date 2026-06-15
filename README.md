@@ -64,6 +64,28 @@ ros2 run llm_skill_robot perception-demo
 
 Expected current output is `NOT_AVAILABLE` because D435i/SAM3 is not connected yet.
 
+## SAM3 Conda Subprocess Inference
+
+SAM3 is expected to live in a separate conda environment named `sam3`.
+The main ROS 2 / `LLM_Ros` environment must not import SAM3 directly; it keeps
+`rclpy`, `cv_bridge`, MoveIt, and robot-side logic separate from model
+inference. SAM3 inference is called through JSON over a subprocess boundary.
+
+Run the conda-side runner directly:
+
+```bash
+cd ~/dev_ws/src/LLM_Ros
+conda run -n sam3 python scripts/sam3_runner.py --image data/perception_samples/sample_001/rgb.png --query "red cube"
+```
+
+Run the main-project single-image adapter test:
+
+```bash
+cd ~/dev_ws/src/LLM_Ros
+source .venv/bin/activate
+python -m llm_skill_robot.sam3_subprocess_single_image_test
+```
+
 ## Natural Language Plan Demo
 
 Convert a natural-language instruction into a structured `RobotPlan`, verify it, and ask for human approval. This demo does not call a real LLM API, MoveIt, or robot execution.

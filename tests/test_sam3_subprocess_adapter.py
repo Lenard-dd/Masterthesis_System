@@ -1,0 +1,130 @@
+import json
+import subprocess
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+from llm_skill_robot.perception.sam3_subprocess_adapter import SAM3SubprocessAdapter
+
+
+def _make_runner(tmp_path: Path) -> Path:
+    runner = tmp_path / "sam3_runner.py"
+    runner.write_text("# runner\n", encoding="utf-8")
+    return runner
+
+
+def test_builds_expected_command(tmp_path):
+    runner = _make_runner(tmp_path)
+    adapter = SAM3SubprocessAdapter(
+        {
+            "conda_env": "sam3",
+            "conda_executable": "conda",
+            "runner_script": str(runner),
+            "output_dir": "data/perception_outputs",
+            "timeout_sec": 60.0,
+            "device": "cuda",
+            "checkpoint_path": "checkpoint.pt",
+            "model_config": "model.yaml",
+        }
+    )
+
+    command = adapter._build_command("rgb.png", "red cube", 0.7)
+
+    assert command == [
+        "conda",
+        "run",
+        "-n",
+        "sam3",
+        "python",
+        str(runner),
+        "--image",
+        "rgb.png",
+        "--query",
+        "red cube",
+        "--min-confidence",
+        "0.7",
+        "--output-dir",
+        "data/perception_outputs",
+        "--checkpoint",
+        "checkpoint.pt",
+        "--model-config",
+        "model.yaml",
+        "--device",
+        "cuda",
+    ]
+
+
+def test_missing_runner_script_returns_not_available(tmp_path):
+    adapter = SAM3SubprocessAdapter({"runner_script": str(tmp_path / "missing.py")})
+
+    assert adapter.is_available() is False
+    result = adapter.detect("rgb.png", "red cube")
+
+    assert result["status"] == "NOT_AVAILABLE"
+    assert "runner script does not exist" in result["message"]
+
+
+@patch("llm_skill_robot.perception.sam3_subprocess_adapter.subprocess.run")
+def test_detect_success_parses_json(mock_run, tmp_path):
+    runner = _make_runner(tmp_path)
+    payload = {
+        "status": "SUCCESS",
+        "message": "ok",
+        "detections": [
+            {
+                "label": "red cube",
+                "confidence": 0.85,
+                "bbox_xyxy": [1, 2, 3, 4],
+                "mask_path": "mask.png",
+                "overlay_path": "overlay.png",
+                "metadata": {},
+            }
+        ],
+    }
+    mock_run.return_value = Mock(returncode=0, stdout=json.dumps(payload), stderr="")
+    adapter = SAM3SubprocessAdapter({"runner_script": str(runner)})
+
+    result = adapter.detect("rgb.png", "red cube", 0.6)
+
+    assert result == payload
+    mock_run.assert_called_once()
+    assert mock_run.call_args.kwargs["capture_output"] is True
+    assert mock_run.call_args.kwargs["text"] is True
+
+
+@patch("llm_skill_robot.perception.sam3_subprocess_adapter.subprocess.run")
+def test_detect_nonzero_exit_returns_failed(mock_run, tmp_path):
+    runner = _make_runner(tmp_path)
+    mock_run.return_value = Mock(returncode=2, stdout="", stderr="boom")
+    adapter = SAM3SubprocessAdapter({"runner_script": str(runner)})
+
+    result = adapter.detect("rgb.png", "red cube")
+
+    assert result["status"] == "FAILED"
+    assert "exited with code 2" in result["message"]
+    assert "boom" in result["message"]
+
+
+@patch("llm_skill_robot.perception.sam3_subprocess_adapter.subprocess.run")
+def test_detect_timeout_returns_failed(mock_run, tmp_path):
+    runner = _make_runner(tmp_path)
+    mock_run.side_effect = subprocess.TimeoutExpired(["conda"], timeout=60)
+    adapter = SAM3SubprocessAdapter({"runner_script": str(runner), "timeout_sec": 60})
+
+    result = adapter.detect("rgb.png", "red cube")
+
+    assert result["status"] == "FAILED"
+    assert "timed out" in result["message"]
+
+
+@patch("llm_skill_robot.perception.sam3_subprocess_adapter.subprocess.run")
+def test_detect_invalid_json_returns_failed(mock_run, tmp_path):
+    runner = _make_runner(tmp_path)
+    mock_run.return_value = Mock(returncode=0, stdout="not json", stderr="debug")
+    adapter = SAM3SubprocessAdapter({"runner_script": str(runner)})
+
+    result = adapter.detect("rgb.png", "red cube")
+
+    assert result["status"] == "FAILED"
+    assert "valid JSON" in result["message"]
+    assert "not json" in result["message"]
+    assert "debug" in result["message"]
