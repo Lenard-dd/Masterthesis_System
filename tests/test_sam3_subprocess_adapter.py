@@ -63,6 +63,17 @@ def test_missing_runner_script_returns_not_available(tmp_path):
     assert "runner script does not exist" in result["message"]
 
 
+def test_default_relative_runner_resolves_from_repo_root(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    adapter = SAM3SubprocessAdapter()
+
+    runner_script = Path(adapter.config["runner_script"])
+
+    assert runner_script.is_absolute()
+    assert runner_script.name == "sam3_runner.py"
+    assert runner_script.exists()
+
+
 @patch("llm_skill_robot.perception.sam3_subprocess_adapter.subprocess.run")
 def test_detect_success_parses_json(mock_run, tmp_path):
     runner = _make_runner(tmp_path)

@@ -28,6 +28,9 @@ class SAM3SubprocessAdapter:
         if "sam3_subprocess" in config:
             config = config["sam3_subprocess"] or {}
         self.config = {**self.DEFAULT_CONFIG, **config}
+        self.config["runner_script"] = str(
+            self._resolve_runner_script(str(self.config["runner_script"]))
+        )
 
     def is_available(self) -> bool:
         """Return whether the subprocess entry point can be invoked."""
@@ -144,6 +147,19 @@ class SAM3SubprocessAdapter:
             command.extend(["--device", device])
 
         return command
+
+    @staticmethod
+    def _resolve_runner_script(runner_script: str) -> Path:
+        path = Path(runner_script).expanduser()
+        if path.is_absolute() or path.exists():
+            return path
+
+        repo_root = Path(__file__).resolve().parents[2]
+        repo_relative = repo_root / path
+        if repo_relative.exists():
+            return repo_relative
+
+        return path
 
     @staticmethod
     def _result(status: str, message: str, detections: list[dict] | None = None) -> dict:

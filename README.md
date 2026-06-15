@@ -83,6 +83,15 @@ The D435i backend saves the latest RGB frame to
 subprocess adapter. Normal unit tests use mocks and do not require a running
 ROS graph or a live camera.
 
+Run the live camera-to-SAM3 demo after launching the D435i separately:
+
+```bash
+cd ~/dev_ws
+source /opt/ros/humble/setup.zsh
+source install/setup.zsh
+ros2 run llm_skill_robot ros-d435i-sam3-demo
+```
+
 ## SAM3 Conda Subprocess Inference
 
 SAM3 is expected to live in a separate conda environment named `sam3`.
