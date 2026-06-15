@@ -9,6 +9,7 @@ from typing import Any
 import yaml
 
 from llm_skill_robot.perception.perception_backend_base import BasePerceptionBackend
+from llm_skill_robot.perception.object_pose_estimator import ObjectPoseEstimator
 from llm_skill_robot.perception.scene_model import (
     DetectionResult,
     SceneModel,
@@ -53,6 +54,7 @@ class D435iBackend(BasePerceptionBackend):
         self.latest_depth_msg = None
         self.latest_camera_info_msg = None
         self.latest_scene = SceneModel(source="d435i_sam3")
+        self.pose_estimator = ObjectPoseEstimator()
         self._bridge = None
         self._subscriptions = []
 
@@ -265,6 +267,7 @@ class D435iBackend(BasePerceptionBackend):
         if not isinstance(detections, list):
             return []
 
+        depth_image = self._get_latest_depth_image()
         objects: list[SceneObject] = []
         for index, detection in enumerate(detections, start=1):
             if not isinstance(detection, dict):
@@ -282,6 +285,15 @@ class D435iBackend(BasePerceptionBackend):
                     "overlay_path": overlay_path,
                 }
             )
+            pose = self.pose_estimator.estimate_pose_from_detection(
+                detection=detection,
+                depth_image=depth_image,
+                camera_info=self.latest_camera_info_msg,
+                target_frame=self.config.get(
+                    "depth_frame",
+                    self.config.get("rgb_frame", "camera_color_optical_frame"),
+                ),
+            )
 
             objects.append(
                 SceneObject(
@@ -289,8 +301,8 @@ class D435iBackend(BasePerceptionBackend):
                     label=label,
                     confidence=confidence,
                     mask_available=bool(mask_path and Path(str(mask_path)).exists()),
-                    pose_available=False,
-                    pose=None,
+                    pose_available=pose is not None,
+                    pose=pose,
                     graspable=False,
                     source="d435i_sam3",
                     metadata=metadata,
@@ -298,6 +310,37 @@ class D435iBackend(BasePerceptionBackend):
             )
 
         return objects
+
+    def _get_latest_depth_image(self):
+        if self.latest_depth_msg is None:
+            return None
+
+        if hasattr(self.latest_depth_msg, "image"):
+            return self.latest_depth_msg
+
+        if not hasattr(self.latest_depth_msg, "encoding"):
+            return self.latest_depth_msg
+
+        try:
+            from cv_bridge import CvBridge
+        except ImportError:
+            return None
+
+        if self._bridge is None:
+            self._bridge = CvBridge()
+
+        try:
+            image = self._bridge.imgmsg_to_cv2(
+                self.latest_depth_msg,
+                desired_encoding="passthrough",
+            )
+        except Exception:
+            return None
+
+        return {
+            "image": image,
+            "encoding": getattr(self.latest_depth_msg, "encoding", ""),
+        }
 
     @staticmethod
     def _clamp_confidence(value: Any) -> float:

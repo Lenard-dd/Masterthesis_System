@@ -1,6 +1,7 @@
 from unittest.mock import Mock
 
 import llm_skill_robot.perception.d435i_backend as d435i_module
+import numpy as np
 from llm_skill_robot.perception.d435i_backend import D435iBackend
 from llm_skill_robot.perception.scene_model import DetectionResult, SceneModel
 
@@ -122,3 +123,43 @@ def test_detect_object_converts_detector_detections(tmp_path):
     assert result.objects[0].pose_available is False
     assert result.objects[0].metadata["bbox_xyxy"] == [1, 2, 3, 4]
     assert "detector status SUCCESS" in result.message
+
+
+def test_detect_object_estimates_pose_when_depth_and_camera_info_available():
+    detector = Mock()
+    detector.detect.return_value = {
+        "status": "SUCCESS",
+        "message": "detected",
+        "detections": [
+            {
+                "label": "red cube",
+                "confidence": 0.85,
+                "bbox_xyxy": [2, 2, 4, 4],
+                "metadata": {},
+            }
+        ],
+    }
+    backend = D435iBackend(config={"wait_timeout_sec": 0.0}, detector_adapter=detector)
+    backend.latest_rgb_msg = object()
+    backend.latest_depth_msg = {
+        "image": np.full((5, 5), 2.0, dtype=np.float32),
+        "encoding": "32FC1",
+    }
+    backend.latest_camera_info_msg = Mock(
+        k=[100.0, 0.0, 2.0, 0.0, 100.0, 2.0, 0.0, 0.0, 1.0]
+    )
+    backend._save_latest_rgb_frame = Mock(
+        return_value={
+            "status": "SUCCESS",
+            "message": "saved",
+            "path": "data/perception_runtime/latest_rgb.png",
+        }
+    )
+
+    result = backend.detect_object("red cube")
+
+    assert result.objects[0].pose_available is True
+    assert result.objects[0].pose is not None
+    assert result.objects[0].pose.x == 0.02
+    assert result.objects[0].pose.y == 0.02
+    assert result.objects[0].pose.z == 2.0
