@@ -297,7 +297,7 @@ class D435iBackend(BasePerceptionBackend):
 
             objects.append(
                 SceneObject(
-                    object_id=f"d435i_sam3_{index}",
+                    object_id=f"{self._object_id_label(label)}_{index}",
                     label=label,
                     confidence=confidence,
                     mask_available=bool(mask_path and Path(str(mask_path)).exists()),
@@ -310,6 +310,11 @@ class D435iBackend(BasePerceptionBackend):
             )
 
         return objects
+
+    @staticmethod
+    def _object_id_label(label: str) -> str:
+        normalized = " ".join(str(label).strip().split())
+        return normalized or "object"
 
     def _get_latest_depth_image(self):
         if self.latest_depth_msg is None:

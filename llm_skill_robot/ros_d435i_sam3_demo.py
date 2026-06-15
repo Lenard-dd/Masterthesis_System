@@ -63,6 +63,12 @@ def _print_detection_result(result) -> None:
         print(f"mask_path: {metadata.get('mask_path')}")
         print(f"overlay_path: {metadata.get('overlay_path')}")
         print(f"pose_available: {scene_object.pose_available}")
+        if scene_object.pose_available and scene_object.pose is not None:
+            print("pose:")
+            print(f"  frame: {scene_object.pose.frame}")
+            print(f"  x: {scene_object.pose.x}")
+            print(f"  y: {scene_object.pose.y}")
+            print(f"  z: {scene_object.pose.z}")
 
     print("\nScene summary:")
     print(f"frame: {scene.frame if scene else None}")

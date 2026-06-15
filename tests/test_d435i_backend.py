@@ -117,6 +117,7 @@ def test_detect_object_converts_detector_detections(tmp_path):
         0.6,
     )
     assert result.status == "SUCCESS"
+    assert result.objects[0].object_id == "red cube_1"
     assert result.objects[0].label == "red cube"
     assert result.objects[0].source == "d435i_sam3"
     assert result.objects[0].mask_available is True
@@ -163,3 +164,32 @@ def test_detect_object_estimates_pose_when_depth_and_camera_info_available():
     assert result.objects[0].pose.x == 0.02
     assert result.objects[0].pose.y == 0.02
     assert result.objects[0].pose.z == 2.0
+
+
+def test_detect_object_uses_label_based_object_id():
+    detector = Mock()
+    detector.detect.return_value = {
+        "status": "SUCCESS",
+        "message": "detected",
+        "detections": [
+            {
+                "label": "red cubes",
+                "confidence": 0.95,
+                "bbox_xyxy": [1, 2, 3, 4],
+                "metadata": {},
+            }
+        ],
+    }
+    backend = D435iBackend(config={"wait_timeout_sec": 0.0}, detector_adapter=detector)
+    backend.latest_rgb_msg = object()
+    backend._save_latest_rgb_frame = Mock(
+        return_value={
+            "status": "SUCCESS",
+            "message": "saved",
+            "path": "data/perception_runtime/latest_rgb.png",
+        }
+    )
+
+    result = backend.detect_object("red cubes")
+
+    assert result.objects[0].object_id == "red cubes_1"

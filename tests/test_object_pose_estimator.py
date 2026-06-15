@@ -60,6 +60,20 @@ def test_missing_camera_info_returns_none():
     assert pose is None
 
 
+def test_numpy_camera_info_intrinsics_do_not_trigger_boolean_array_check():
+    estimator = ObjectPoseEstimator()
+    depth = np.full((5, 5), 2.0, dtype=np.float32)
+    camera_info = {"k": np.array([100.0, 0.0, 2.0, 0.0, 100.0, 2.0, 0.0, 0.0, 1.0])}
+    detection = {"bbox_xyxy": [2, 2, 4, 4]}
+
+    pose = estimator.estimate_pose_from_detection(detection, depth, camera_info)
+
+    assert pose is not None
+    assert pose.x == 0.02
+    assert pose.y == 0.02
+    assert pose.z == 2.0
+
+
 def test_mask_centroid_and_median_mask_depth_are_preferred():
     estimator = ObjectPoseEstimator()
     depth = np.zeros((5, 5), dtype=np.float32)

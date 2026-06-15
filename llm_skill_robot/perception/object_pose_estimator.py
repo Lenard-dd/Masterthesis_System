@@ -50,9 +50,13 @@ class ObjectPoseEstimator:
     def _camera_intrinsics(camera_info) -> tuple[float, float, float, float] | None:
         values = None
         if isinstance(camera_info, dict):
-            values = camera_info.get("k") or camera_info.get("K")
+            values = camera_info.get("k")
+            if values is None:
+                values = camera_info.get("K")
         else:
-            values = getattr(camera_info, "k", None) or getattr(camera_info, "K", None)
+            values = getattr(camera_info, "k", None)
+            if values is None:
+                values = getattr(camera_info, "K", None)
 
         if values is None or len(values) < 6:
             return None
