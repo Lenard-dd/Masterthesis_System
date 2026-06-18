@@ -15,6 +15,7 @@ from llm_skill_robot.perception.scene_model import (
     SceneModel,
     SceneObject,
 )
+from llm_skill_robot.perception.tf_pose_transformer import TFPoseTransformer
 
 try:  # ROS imports are optional so normal pytest does not need a ROS graph.
     import rclpy
@@ -46,15 +47,19 @@ class D435iBackend(BasePerceptionBackend):
         node=None,
         config: dict | None = None,
         detector_adapter=None,
+        pose_transformer=None,
     ):
         self.node = node
+        self.full_config = self._load_full_config(config)
         self.config = self._load_config(config)
+        self.perception_config = self._load_perception_config(self.full_config)
         self.detector_adapter = detector_adapter or self._make_default_detector(config)
         self.latest_rgb_msg = None
         self.latest_depth_msg = None
         self.latest_camera_info_msg = None
         self.latest_scene = SceneModel(source="d435i_sam3")
         self.pose_estimator = ObjectPoseEstimator()
+        self.pose_transformer = pose_transformer or self._make_pose_transformer()
         self._bridge = None
         self._subscriptions = []
 
@@ -126,7 +131,7 @@ class D435iBackend(BasePerceptionBackend):
         objects = self._detections_to_scene_objects(detections)
         self.latest_scene = SceneModel(
             objects=objects,
-            frame=self.config.get("rgb_frame", "camera_color_optical_frame"),
+            frame=self._scene_frame(objects),
             source="d435i_sam3",
         )
 
@@ -142,18 +147,27 @@ class D435iBackend(BasePerceptionBackend):
         return self.latest_scene
 
     @classmethod
-    def _load_config(cls, config: dict | None) -> dict[str, Any]:
-        loaded: dict[str, Any] = {}
+    def _load_full_config(cls, config: dict | None) -> dict[str, Any]:
         if config is None:
             config_path = Path(__file__).resolve().parents[2] / "config" / "perception.yaml"
             if config_path.exists():
                 with config_path.open("r", encoding="utf-8") as handle:
-                    loaded = yaml.safe_load(handle) or {}
-        else:
-            loaded = config
+                    return yaml.safe_load(handle) or {}
+            return {}
+        return config
+
+    @classmethod
+    def _load_config(cls, config: dict | None) -> dict[str, Any]:
+        loaded = cls._load_full_config(config)
 
         d435i_config = loaded.get("d435i", loaded) if isinstance(loaded, dict) else {}
         return {**cls.DEFAULT_CONFIG, **(d435i_config or {})}
+
+    @staticmethod
+    def _load_perception_config(config: dict | None) -> dict[str, Any]:
+        if isinstance(config, dict):
+            return config.get("perception", {}) or {}
+        return {}
 
     @staticmethod
     def _make_default_detector(config: dict | None):
@@ -165,6 +179,13 @@ class D435iBackend(BasePerceptionBackend):
             return None
 
         return SAM3SubprocessAdapter(config)
+
+    def _make_pose_transformer(self):
+        target_frame = self.perception_config.get("target_frame")
+        camera_frame = self.config.get("depth_frame") or self.config.get("rgb_frame")
+        if self.node is None or not target_frame or target_frame == camera_frame:
+            return None
+        return TFPoseTransformer(self.node, target_frame=target_frame)
 
     def _create_subscriptions(self) -> None:
         if self.node is None or Image is None or CameraInfo is None:
@@ -294,6 +315,7 @@ class D435iBackend(BasePerceptionBackend):
                     self.config.get("rgb_frame", "camera_color_optical_frame"),
                 ),
             )
+            pose = self._transform_pose_if_needed(pose, metadata)
 
             objects.append(
                 SceneObject(
@@ -310,6 +332,32 @@ class D435iBackend(BasePerceptionBackend):
             )
 
         return objects
+
+    def _transform_pose_if_needed(self, pose, metadata: dict):
+        if pose is None:
+            return None
+
+        target_frame = self.perception_config.get("target_frame")
+        if not target_frame or target_frame == pose.frame:
+            return pose
+
+        transformed_pose = None
+        if self.pose_transformer is not None:
+            transformed_pose = self.pose_transformer.transform_pose(pose)
+
+        if transformed_pose is not None:
+            return transformed_pose
+
+        warnings = metadata.setdefault("warnings", [])
+        warning = f"TF transform to {target_frame} unavailable."
+        if warning not in warnings:
+            warnings.append(warning)
+        return pose
+
+    def _scene_frame(self, objects: list[SceneObject]) -> str:
+        if objects and objects[0].pose_available and objects[0].pose is not None:
+            return objects[0].pose.frame
+        return self.config.get("rgb_frame", "camera_color_optical_frame")
 
     @staticmethod
     def _object_id_label(label: str) -> str:

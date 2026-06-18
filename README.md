@@ -83,6 +83,11 @@ The D435i backend saves the latest RGB frame to
 subprocess adapter. Normal unit tests use mocks and do not require a running
 ROS graph or a live camera.
 
+For robot pick/place, the camera optical frame must also be connected to
+`base_link` through TF. Without a valid camera-to-base transform, perception can
+still detect objects and estimate an approximate camera-frame centroid, but
+`pick_object` should remain blocked when `base_link` pose is required.
+
 Run the live camera-to-SAM3 demo after launching the D435i separately:
 
 ```bash

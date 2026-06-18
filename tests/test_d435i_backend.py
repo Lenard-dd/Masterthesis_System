@@ -166,6 +166,106 @@ def test_detect_object_estimates_pose_when_depth_and_camera_info_available():
     assert result.objects[0].pose.z == 2.0
 
 
+def test_detect_object_transforms_pose_to_target_frame_when_tf_available():
+    detector = Mock()
+    detector.detect.return_value = {
+        "status": "SUCCESS",
+        "message": "detected",
+        "detections": [
+            {
+                "label": "red cube",
+                "confidence": 0.85,
+                "bbox_xyxy": [2, 2, 4, 4],
+                "metadata": {},
+            }
+        ],
+    }
+    pose_transformer = Mock()
+    pose_transformer.transform_pose.side_effect = lambda pose: pose.model_copy(
+        update={"frame": "base_link", "x": pose.x + 1.0}
+    )
+    backend = D435iBackend(
+        config={
+            "perception": {"target_frame": "base_link"},
+            "d435i": {"wait_timeout_sec": 0.0},
+        },
+        detector_adapter=detector,
+        pose_transformer=pose_transformer,
+    )
+    backend.latest_rgb_msg = object()
+    backend.latest_depth_msg = {
+        "image": np.full((5, 5), 2.0, dtype=np.float32),
+        "encoding": "32FC1",
+    }
+    backend.latest_camera_info_msg = Mock(
+        k=[100.0, 0.0, 2.0, 0.0, 100.0, 2.0, 0.0, 0.0, 1.0]
+    )
+    backend._save_latest_rgb_frame = Mock(
+        return_value={
+            "status": "SUCCESS",
+            "message": "saved",
+            "path": "data/perception_runtime/latest_rgb.png",
+        }
+    )
+
+    result = backend.detect_object("red cube")
+
+    assert result.objects[0].pose_available is True
+    assert result.objects[0].pose.frame == "base_link"
+    assert result.objects[0].pose.x == 1.02
+    assert result.objects[0].metadata.get("warnings") is None
+    assert result.scene.frame == "base_link"
+
+
+def test_detect_object_keeps_camera_pose_and_warns_when_tf_unavailable():
+    detector = Mock()
+    detector.detect.return_value = {
+        "status": "SUCCESS",
+        "message": "detected",
+        "detections": [
+            {
+                "label": "red cube",
+                "confidence": 0.85,
+                "bbox_xyxy": [2, 2, 4, 4],
+                "metadata": {},
+            }
+        ],
+    }
+    pose_transformer = Mock()
+    pose_transformer.transform_pose.return_value = None
+    backend = D435iBackend(
+        config={
+            "perception": {"target_frame": "base_link"},
+            "d435i": {"wait_timeout_sec": 0.0},
+        },
+        detector_adapter=detector,
+        pose_transformer=pose_transformer,
+    )
+    backend.latest_rgb_msg = object()
+    backend.latest_depth_msg = {
+        "image": np.full((5, 5), 2.0, dtype=np.float32),
+        "encoding": "32FC1",
+    }
+    backend.latest_camera_info_msg = Mock(
+        k=[100.0, 0.0, 2.0, 0.0, 100.0, 2.0, 0.0, 0.0, 1.0]
+    )
+    backend._save_latest_rgb_frame = Mock(
+        return_value={
+            "status": "SUCCESS",
+            "message": "saved",
+            "path": "data/perception_runtime/latest_rgb.png",
+        }
+    )
+
+    result = backend.detect_object("red cube")
+
+    assert result.objects[0].pose_available is True
+    assert result.objects[0].pose.frame == "camera_color_optical_frame"
+    assert result.objects[0].metadata["warnings"] == [
+        "TF transform to base_link unavailable."
+    ]
+
+
 def test_detect_object_uses_label_based_object_id():
     detector = Mock()
     detector.detect.return_value = {

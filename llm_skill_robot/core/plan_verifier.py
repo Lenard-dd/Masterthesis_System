@@ -164,6 +164,12 @@ class PlanVerifier:
 
         if not scene_object.pose_available:
             reasons.append("Object pose is not available.")
+        elif self._base_link_pose_required(context):
+            required_frame = context.get("target_frame", "base_link")
+            if scene_object.pose is None or scene_object.pose.frame != required_frame:
+                reasons.append(
+                    f"Object pose is not available in required frame '{required_frame}'."
+                )
         if not scene_object.graspable:
             reasons.append("Object is not marked as graspable.")
 
@@ -213,6 +219,10 @@ class PlanVerifier:
         if isinstance(scene, dict):
             return SceneModel.model_validate(scene)
         return None
+
+    @staticmethod
+    def _base_link_pose_required(context: Dict[str, Any]) -> bool:
+        return bool(context.get("require_base_link_pose_for_pick", False))
 
     @staticmethod
     def _find_scene_object(
