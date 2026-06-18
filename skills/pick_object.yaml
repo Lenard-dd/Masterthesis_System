@@ -4,7 +4,10 @@ description: "Pick up an object at the current position"
 parameters:
   - name: "object_id"
     type: "string"
-    required: true
+    required: false
+  - name: "query"
+    type: "string"
+    required: false
 preconditions:
   - "gripper_open"
 effects:

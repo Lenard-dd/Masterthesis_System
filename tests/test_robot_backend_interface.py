@@ -54,8 +54,9 @@ def test_mock_backend_list_named_targets():
     
     assert isinstance(targets, list)
     assert "home" in targets
-    assert "pickup" in targets
-    assert "place" in targets
+    assert "observe" in targets
+    assert "pickup" not in targets
+    assert "place" not in targets
 
 
 def test_mock_backend_stop_motion():
@@ -85,8 +86,9 @@ def test_base_ros_backend_list_named_targets():
     targets = backend.list_named_targets()
     
     assert "home" in targets
-    assert "pickup" in targets
-    assert "place" in targets
+    assert "observe" in targets
+    assert "pickup" not in targets
+    assert "place" not in targets
 
 
 def test_base_ros_backend_not_implemented_methods():

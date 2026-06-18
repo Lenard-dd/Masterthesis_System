@@ -215,5 +215,7 @@ def test_prompt_includes_perception_rules_for_object_pose():
 
     assert "detect_object before pick_object" in prompt
     assert "natural-language query" in prompt
+    assert "pick_object with the same query" in prompt
+    assert "Do not use move_to_named_target for pickup or place actions" in prompt
     assert "red cube" in prompt
     assert "Do not invent object poses" in prompt

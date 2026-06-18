@@ -1,4 +1,9 @@
 from llm_skill_robot.perception.perception_backend_base import BasePerceptionBackend
+from llm_skill_robot.perception.perception_factory import (
+    create_perception_pipeline,
+    load_perception_config,
+    perception_context_from_config,
+)
 from llm_skill_robot.perception.perception_pipeline import PerceptionPipeline
 from llm_skill_robot.perception.perception_skill_backend import PerceptionSkillBackend
 from llm_skill_robot.perception.scene_model import (
@@ -17,8 +22,11 @@ __all__ = [
     "BasePerceptionBackend",
     "DetectionResult",
     "ObjectPose",
+    "create_perception_pipeline",
+    "load_perception_config",
     "PerceptionPipeline",
     "PerceptionSkillBackend",
+    "perception_context_from_config",
     "SceneModel",
     "SceneObject",
     "SAM3SubprocessAdapter",

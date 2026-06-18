@@ -88,6 +88,13 @@ For robot pick/place, the camera optical frame must also be connected to
 still detect objects and estimate an approximate camera-frame centroid, but
 `pick_object` should remain blocked when `base_link` pose is required.
 
+The RViz/LLM plan demos also route the `detect_object` skill through the
+configured perception pipeline. With `perception.mode: d435i_sam3` and
+`detector: sam3_subprocess`, `detect_object` uses the live D435i frame and runs
+SAM3 through the conda subprocess adapter. The main ROS 2 environment still does
+not import SAM3 directly. `pick_object` remains verification-blocked unless the
+detected object has a verified 3D pose in `base_link`.
+
 Run the live camera-to-SAM3 demo after launching the D435i separately:
 
 ```bash

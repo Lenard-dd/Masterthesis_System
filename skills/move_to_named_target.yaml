@@ -5,7 +5,7 @@ parameters:
   - name: "target_name"
     type: "string"
     required: true
-    allowed_values: ["home", "observe", "pickup", "place"]
+    allowed_values: ["home", "observe"]
   - name: "velocity_scale"
     type: "float"
     required: false

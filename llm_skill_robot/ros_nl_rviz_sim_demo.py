@@ -17,6 +17,11 @@ from llm_skill_robot.core.skill_library import SkillLibrary
 from llm_skill_robot.core.trajectory_reviewer import TrajectoryReviewer
 from llm_skill_robot.core.trajectory_validator import TrajectoryValidator
 from llm_skill_robot.core.trajectory_visualizer import TrajectoryVisualizer
+from llm_skill_robot.perception.perception_factory import (
+    create_perception_pipeline,
+    load_perception_config,
+    perception_context_from_config,
+)
 from llm_skill_robot.perception.perception_pipeline import PerceptionPipeline
 from llm_skill_robot.robot.robotiq_2f140_sim_backend import Robotiq2F140SimBackend
 from llm_skill_robot.robot.robotiq_2f140_joint_state_sim import Robotiq2F140JointStateSim
@@ -141,11 +146,20 @@ def execute_non_motion_skill(
     if step.skill_id in PERCEPTION_SKILL_IDS:
         perception_pipeline = perception_pipeline or PerceptionPipeline()
         parameters = dict(step.parameters)
-        result = perception_pipeline.detect_object(
-            query=parameters.get("query", ""),
-            min_confidence=parameters.get("min_confidence", 0.5),
-            require_pose=parameters.get("require_pose", True),
-        )
+        try:
+            result = perception_pipeline.detect_object(
+                query=parameters.get("query", ""),
+                min_confidence=parameters.get("min_confidence", 0.5),
+                require_pose=parameters.get("require_pose", True),
+            )
+        except Exception as exc:
+            result = {
+                "success": False,
+                "status": "FAILED",
+                "message": f"detect_object failed: {exc}",
+                "objects": [],
+                "scene": perception_pipeline.get_latest_scene().model_dump(),
+            }
         latest_scene = perception_pipeline.get_latest_scene()
         context["scene"] = latest_scene
         context["perception_available"] = result.get("status") != "NOT_AVAILABLE"
@@ -564,10 +578,15 @@ def main() -> None:
             _load_gripper_config(),
             joint_state_sim=gripper_joint_state_sim,
         )
-        perception_pipeline = PerceptionPipeline()
+        perception_config = load_perception_config()
+        perception_pipeline = create_perception_pipeline(
+            node=node,
+            config=perception_config,
+        )
         execution_context: Dict[str, Any] = {
             "scene": perception_pipeline.get_latest_scene(),
             "perception_available": False,
+            **perception_context_from_config(perception_config),
         }
         trajectory_validator = TrajectoryValidator(safety_config)
         trajectory_reviewer = TrajectoryReviewer()

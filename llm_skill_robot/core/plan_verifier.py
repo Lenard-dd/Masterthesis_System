@@ -139,6 +139,9 @@ class PlanVerifier:
         object_id = step.parameters.get("object_id")
         query = step.parameters.get("query")
         if object_id is None and query is None:
+            reasons.append(
+                "Missing required parameter 'object_id' or 'query' for skill 'pick_object'"
+            )
             return
         if context.get("skip_perception_scene_checks", False):
             return
@@ -162,14 +165,18 @@ class PlanVerifier:
             )
             return
 
-        if not scene_object.pose_available:
-            reasons.append("Object pose is not available.")
-        elif self._base_link_pose_required(context):
+        if self._base_link_pose_required(context):
             required_frame = context.get("target_frame", "base_link")
-            if scene_object.pose is None or scene_object.pose.frame != required_frame:
+            if (
+                not scene_object.pose_available
+                or scene_object.pose is None
+                or scene_object.pose.frame != required_frame
+            ):
                 reasons.append(
-                    f"Object pose is not available in required frame '{required_frame}'."
+                    "pick_object blocked because no verified base_link object pose is available."
                 )
+        elif not scene_object.pose_available:
+            reasons.append("Object pose is not available.")
         if not scene_object.graspable:
             reasons.append("Object is not marked as graspable.")
 

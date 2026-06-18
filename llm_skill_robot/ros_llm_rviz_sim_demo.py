@@ -19,7 +19,11 @@ from llm_skill_robot.core.trajectory_reviewer import TrajectoryReviewer
 from llm_skill_robot.core.trajectory_validator import TrajectoryValidator
 from llm_skill_robot.robot.robotiq_2f140_sim_backend import Robotiq2F140SimBackend
 from llm_skill_robot.robot.ur5_moveit_plan_backend import UR5MoveItPlanBackend
-from llm_skill_robot.perception.perception_pipeline import PerceptionPipeline
+from llm_skill_robot.perception.perception_factory import (
+    create_perception_pipeline,
+    load_perception_config,
+    perception_context_from_config,
+)
 from llm_skill_robot.ros_nl_rviz_sim_demo import (
     OBJECT_RELATED_SKILL_IDS,
     PERCEPTION_SKILL_IDS,
@@ -156,10 +160,15 @@ def _execute_plan_steps(
         joint_state_sim=gripper_joint_state_sim,
     )
     skill_library = SkillLibrary()
-    perception_pipeline = PerceptionPipeline()
+    perception_config = load_perception_config()
+    perception_pipeline = create_perception_pipeline(
+        node=node,
+        config=perception_config,
+    )
     execution_context = {
         "scene": perception_pipeline.get_latest_scene(),
         "perception_available": False,
+        **perception_context_from_config(perception_config),
     }
     trajectory_validator = TrajectoryValidator(safety_config)
     trajectory_reviewer = TrajectoryReviewer()

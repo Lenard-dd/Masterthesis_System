@@ -53,7 +53,7 @@ class BaseROSBackend(BaseRobotBackend):
 
     def list_named_targets(self) -> List[str]:
         """List available named targets. Placeholder for ROS implementation."""
-        return ["home", "pickup", "place"]
+        return ["home", "observe"]
 
     def move_to_named_target(self, target_name: str, velocity_scale: float = 0.1, **kwargs) -> Dict[str, Any]:
         """Move to a named target. To be implemented by subclasses."""

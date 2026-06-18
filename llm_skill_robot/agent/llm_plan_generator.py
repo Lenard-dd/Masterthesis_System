@@ -101,7 +101,17 @@ class LLMPlanGenerator(BasePlanGenerator):
                     "Use detect_object before pick_object when an object pose is "
                     "required. detect_object requires a natural-language query "
                     'such as "red cube", "blue cup", or "object on the table". '
-                    "Do not invent object poses or create raw camera/SAM3 commands."
+                    "Then use pick_object with the same query unless a verified "
+                    "object_id is already available. Do not invent object poses or "
+                    "create raw camera/SAM3 commands."
+                ),
+            },
+            "object_manipulation_rules": {
+                "instruction": (
+                    "Do not use move_to_named_target for pickup or place actions. "
+                    "move_to_named_target may only use named targets explicitly "
+                    "listed in its allowed_values, such as home or observe. For "
+                    "object picking, use detect_object followed by pick_object."
                 ),
             },
             "output_schema": {

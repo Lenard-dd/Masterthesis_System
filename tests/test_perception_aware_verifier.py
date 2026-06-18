@@ -117,6 +117,35 @@ def test_pick_object_allowed_when_object_is_pose_available_graspable_and_confide
     assert result.reasons == []
 
 
+def test_pick_object_allowed_with_query_when_scene_label_matches():
+    scene = SceneModel(objects=[_scene_object()])
+
+    result = _verifier().verify_plan(
+        _plan(_pick_step({"query": "cup", "min_confidence": 0.5})),
+        context={"scene": scene, "perception_available": True},
+    )
+
+    assert result.decision == VerificationDecision.ALLOW
+    assert result.reasons == []
+
+
+def test_pick_object_allowed_when_required_base_link_pose_is_verified():
+    scene = SceneModel(objects=[_scene_object()])
+
+    result = _verifier().verify_plan(
+        _plan(_pick_step({"object_id": "cup_1", "min_confidence": 0.5})),
+        context={
+            "scene": scene,
+            "perception_available": True,
+            "require_base_link_pose_for_pick": True,
+            "target_frame": "base_link",
+        },
+    )
+
+    assert result.decision == VerificationDecision.ALLOW
+    assert result.reasons == []
+
+
 def test_pick_object_blocked_when_required_base_link_pose_is_unavailable():
     scene = SceneModel(
         objects=[
@@ -141,7 +170,36 @@ def test_pick_object_blocked_when_required_base_link_pose_is_unavailable():
     )
 
     assert result.decision == VerificationDecision.BLOCK
-    assert "Object pose is not available in required frame 'base_link'." in result.reasons
+    assert (
+        "pick_object blocked because no verified base_link object pose is available."
+        in result.reasons
+    )
+
+
+def test_pick_object_blocked_when_base_link_required_and_pose_missing():
+    scene = SceneModel(
+        objects=[
+            _scene_object(
+                pose_available=False,
+                pose=None,
+            )
+        ]
+    )
+
+    result = _verifier().verify_plan(
+        _plan(_pick_step({"object_id": "cup_1"})),
+        context={
+            "scene": scene,
+            "require_base_link_pose_for_pick": True,
+            "target_frame": "base_link",
+        },
+    )
+
+    assert result.decision == VerificationDecision.BLOCK
+    assert (
+        "pick_object blocked because no verified base_link object pose is available."
+        in result.reasons
+    )
 
 
 def test_pick_object_blocked_when_confidence_below_minimum():

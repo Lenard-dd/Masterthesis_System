@@ -50,7 +50,7 @@ def test_unknown_skill():
 
 
 def test_missing_required_parameter():
-    """Test verification with missing required parameter."""
+    """Test pick_object requires object_id or query."""
     library = SkillLibrary()
     verifier = PlanVerifier(library)
 
@@ -68,7 +68,10 @@ def test_missing_required_parameter():
 
     result = verifier.verify_plan(plan)
     assert result.decision == VerificationDecision.BLOCK
-    assert any("Missing required parameter 'object_id'" in reason for reason in result.reasons)
+    assert (
+        "Missing required parameter 'object_id' or 'query' for skill 'pick_object'"
+        in result.reasons
+    )
 
 
 def test_invalid_allowed_value():

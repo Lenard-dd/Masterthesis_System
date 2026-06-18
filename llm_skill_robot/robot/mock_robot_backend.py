@@ -8,7 +8,7 @@ class MockRobotBackend(BaseRobotBackend):
         self.current_named_target = None
         self.gripper_open = False
         self.held_object = None
-        self.known_named_targets = set(known_named_targets or ["home", "pickup", "place"])
+        self.known_named_targets = set(known_named_targets or ["home", "observe"])
         self.known_objects = set(known_objects or ["cube_1", "sphere_1"])
 
     def move_to_named_target(self, target: str, velocity_scale: float = 0.1, **kwargs):
