@@ -7,4 +7,4 @@ joint_names:
   - wrist_3_joint
 base_link_name: base_link
 end_effector_name: tool0
-group_name: ur_manipulator
+group_name: ur5_manipulator
