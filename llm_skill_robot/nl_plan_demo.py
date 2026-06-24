@@ -11,6 +11,7 @@ from llm_skill_robot.core.plan import RobotPlan
 from llm_skill_robot.core.plan_verifier import PlanVerifier
 from llm_skill_robot.core.schemas import ValidationDecision, ValidationResult
 from llm_skill_robot.core.skill_library import SkillLibrary
+from llm_skill_robot.safety.hardware_mode import load_hardware_mode, print_hardware_mode
 
 
 def _project_root() -> Path:
@@ -77,6 +78,7 @@ class LetterHumanValidator(HumanValidator):
 
 
 def main() -> None:
+    print_hardware_mode(load_hardware_mode())
     audit_logger = AuditLogger()
     skill_library = SkillLibrary(skills_dir=str(_project_root() / "skills"))
     plan_generator = MockPlanGenerator()

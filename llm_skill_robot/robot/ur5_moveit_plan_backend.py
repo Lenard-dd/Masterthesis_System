@@ -10,6 +10,7 @@ import yaml
 
 from llm_skill_robot.core.execution_mode import is_execution_allowed, load_execution_config
 from llm_skill_robot.core.schemas import MotionPlanCacheEntry, MotionPlanSummary
+from llm_skill_robot.safety.hardware_mode import HardwareMode, load_hardware_mode
 from llm_skill_robot.utils import get_config_dir
 
 PYMOVEIT2_UNAVAILABLE_MESSAGE = (
@@ -156,6 +157,7 @@ class UR5MoveItPlanBackend:
         mode: Optional[str] = None,
         ur5_config: Optional[Dict[str, Any]] = None,
         named_targets: Optional[Dict[str, Dict[str, float]]] = None,
+        hardware_mode: Optional[HardwareMode] = None,
     ):
         ur5_config = ur5_config or self._load_ur5_config()
         self.node = node
@@ -168,6 +170,7 @@ class UR5MoveItPlanBackend:
         self.execution_config = execution_config or load_execution_config().model_dump()
         self.execution_mode = mode or execution_mode or self.execution_config.get("mode", "plan_only")
         self.named_targets = named_targets or self._load_named_targets()
+        self.hardware_mode = hardware_mode or load_hardware_mode()
         self.plan_cache: Dict[str, MotionPlanCacheEntry] = {}
         self._raw_plan_cache: Dict[str, Any] = {}
         self._owns_node = False
@@ -345,6 +348,13 @@ class UR5MoveItPlanBackend:
         trajectory_review_approved: bool = False,
     ) -> Dict[str, Any]:
         """Execute a cached plan only in RViz/fake-hardware simulation mode."""
+        if not self.hardware_mode.arm.allow_rviz_fake_execution:
+            return self._execution_result(
+                success=False,
+                message="RViz/fake hardware arm execution is disabled by hardware_mode.yaml.",
+                plan_id=plan_id,
+                output={},
+            )
         mode = self.execution_mode
         if mode != "rviz_sim" or not is_execution_allowed(mode, self.execution_config):
             return self._execution_result(

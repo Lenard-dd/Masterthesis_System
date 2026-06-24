@@ -6,6 +6,7 @@ import sys
 from llm_skill_robot.core.plan import PlanStep, RobotPlan
 from llm_skill_robot.core.plan_verifier import PlanVerifier
 from llm_skill_robot.core.skill_library import SkillLibrary
+from llm_skill_robot.safety.hardware_mode import load_hardware_mode, print_hardware_mode
 from llm_skill_robot.utils import get_config_dir, get_skills_dir
 
 
@@ -23,6 +24,7 @@ def _to_jsonable(value):
 
 
 def main():
+    print_hardware_mode(load_hardware_mode())
     """Read UR5 state and verify a hardcoded plan without executing it."""
     try:
         import rclpy

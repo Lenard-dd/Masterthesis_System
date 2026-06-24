@@ -17,6 +17,7 @@ from llm_skill_robot.core.trajectory_reviewer import TrajectoryReviewer
 from llm_skill_robot.core.trajectory_validator import TrajectoryValidator
 from llm_skill_robot.core.trajectory_visualizer import TrajectoryVisualizer
 from llm_skill_robot.robot.ur5_moveit_plan_backend import UR5MoveItPlanBackend
+from llm_skill_robot.safety.hardware_mode import load_hardware_mode, print_hardware_mode
 from llm_skill_robot.utils import get_config_dir
 
 RVIZ_SIM_MODE_WARNING = (
@@ -102,6 +103,8 @@ def _decision_value(decision) -> str:
 
 
 def main():
+    hardware_mode = load_hardware_mode()
+    print_hardware_mode(hardware_mode)
     print(RVIZ_SIM_MODE_WARNING)
     audit_logger = AuditLogger()
 
@@ -242,6 +245,7 @@ def main():
             dry_run=False,
             mode=execution_mode,
             execution_config=execution_config,
+            hardware_mode=hardware_mode,
         )
         step = plan.steps[0]
         plan_result = backend.plan_to_named_target(

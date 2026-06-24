@@ -11,6 +11,7 @@ import yaml
 
 from llm_skill_robot.perception.d435i_backend import D435iBackend
 from llm_skill_robot.perception.sam3_subprocess_adapter import SAM3SubprocessAdapter
+from llm_skill_robot.safety.hardware_mode import load_hardware_mode, print_hardware_mode
 
 
 def _load_perception_config() -> dict[str, Any]:
@@ -77,6 +78,7 @@ def _print_detection_result(result) -> None:
 
 
 def main() -> None:
+    print_hardware_mode(load_hardware_mode())
     try:
         import rclpy
     except ImportError:

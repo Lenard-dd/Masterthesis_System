@@ -2,6 +2,7 @@
 """Main CLI for LLM Skill Robot demo."""
 
 from llm_skill_robot.core.skill_library import SkillLibrary
+from llm_skill_robot.safety.hardware_mode import load_hardware_mode, print_hardware_mode
 from llm_skill_robot.core.plan import RobotPlan, PlanStep
 from llm_skill_robot.core.plan_verifier import PlanVerifier
 from llm_skill_robot.core.human_validator import HumanValidator
@@ -12,6 +13,7 @@ from llm_skill_robot.core.execution_evaluator import ExecutionEvaluator
 
 
 def main():
+    print_hardware_mode(load_hardware_mode())
     # Initialize components
     skill_library = SkillLibrary()
     plan_verifier = PlanVerifier(skill_library)

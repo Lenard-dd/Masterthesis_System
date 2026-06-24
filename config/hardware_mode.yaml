@@ -1,0 +1,34 @@
+hardware_mode:
+  mode: real_camera_real_gripper_arm_safe
+
+  camera:
+    enabled: true
+    type: d435i
+
+  sam3:
+    enabled: true
+    execution: conda_subprocess
+    conda_env: sam3
+
+  graspgenx:
+    enabled: true
+    execution: conda_subprocess
+    conda_env: graspgenx
+
+  arm:
+    real_arm_enabled: false
+    allow_arm_execution: false
+    allow_moveit_execution: false
+    allow_rviz_fake_execution: true
+    allow_plan_only: true
+    require_human_confirmation: true
+
+  gripper:
+    real_gripper_enabled: true
+    allow_gripper_execution: true
+    require_human_confirmation: true
+    max_width_m: 0.14
+    min_width_m: 0.0
+    safe_close_width_m: 0.04
+    max_force_N: 20.0
+    max_speed_mps: 0.03

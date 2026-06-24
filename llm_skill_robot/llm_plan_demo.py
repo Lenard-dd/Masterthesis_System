@@ -20,6 +20,7 @@ from llm_skill_robot.core.plan import RobotPlan
 from llm_skill_robot.core.plan_verifier import PlanVerifier
 from llm_skill_robot.core.schemas import VerificationDecision
 from llm_skill_robot.core.skill_library import SkillLibrary
+from llm_skill_robot.safety.hardware_mode import load_hardware_mode, print_hardware_mode
 
 
 def _audit_event(audit_logger: AuditLogger, event: str, payload: Dict[str, Any]) -> None:
@@ -67,6 +68,7 @@ def _available_skill_objects(skill_library: SkillLibrary) -> list:
 
 
 def main() -> None:
+    print_hardware_mode(load_hardware_mode())
     audit_logger = AuditLogger()
     llm_config = load_llm_config().get("llm", {})
     skill_library = SkillLibrary()

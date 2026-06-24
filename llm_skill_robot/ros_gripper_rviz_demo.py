@@ -7,6 +7,7 @@ import yaml
 
 from llm_skill_robot.robot.robotiq_2f140_joint_state_sim import Robotiq2F140JointStateSim
 from llm_skill_robot.robot.robotiq_2f140_sim_backend import Robotiq2F140SimBackend
+from llm_skill_robot.safety.hardware_mode import load_hardware_mode, print_hardware_mode
 from llm_skill_robot.utils import get_config_dir
 
 
@@ -27,6 +28,7 @@ def _print_result(result: dict) -> None:
 
 
 def main() -> None:
+    print_hardware_mode(load_hardware_mode())
     try:
         import rclpy
     except ImportError:

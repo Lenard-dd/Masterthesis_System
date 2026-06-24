@@ -26,6 +26,7 @@ from llm_skill_robot.perception.perception_pipeline import PerceptionPipeline
 from llm_skill_robot.robot.robotiq_2f140_sim_backend import Robotiq2F140SimBackend
 from llm_skill_robot.robot.robotiq_2f140_joint_state_sim import Robotiq2F140JointStateSim
 from llm_skill_robot.robot.ur5_moveit_plan_backend import UR5MoveItPlanBackend
+from llm_skill_robot.safety.hardware_mode import load_hardware_mode, print_hardware_mode
 from llm_skill_robot.ros_rviz_sim_execution_demo import _load_safety_config
 from llm_skill_robot.utils import get_config_dir
 
@@ -460,6 +461,8 @@ def _print_execution_report(step_results: List[Dict[str, Any]]) -> None:
 
 
 def main() -> None:
+    hardware_mode = load_hardware_mode()
+    print_hardware_mode(hardware_mode)
     print(NL_RVIZ_SIM_WARNING)
     audit_logger = AuditLogger()
 
@@ -572,6 +575,7 @@ def main() -> None:
             dry_run=False,
             mode=execution_mode,
             execution_config=execution_config,
+            hardware_mode=hardware_mode,
         )
         gripper_joint_state_sim = _create_gripper_joint_state_sim(node)
         gripper_backend = Robotiq2F140SimBackend(

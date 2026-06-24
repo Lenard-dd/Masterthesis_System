@@ -9,6 +9,7 @@ from llm_skill_robot.core.plan_verifier import PlanVerifier
 from llm_skill_robot.core.schemas import ValidationDecision
 from llm_skill_robot.core.skill_library import SkillLibrary
 from llm_skill_robot.robot.ur5_moveit_plan_backend import UR5MoveItPlanBackend
+from llm_skill_robot.safety.hardware_mode import load_hardware_mode, print_hardware_mode
 
 
 def _create_plan() -> RobotPlan:
@@ -49,6 +50,8 @@ def _print_plan_summary(result: dict) -> None:
 
 
 def main():
+    hardware_mode = load_hardware_mode()
+    print_hardware_mode(hardware_mode)
     print("PLAN-ONLY MODE: this demo will not execute robot motion.")
 
     try:
@@ -67,7 +70,7 @@ def main():
         plan_verifier = PlanVerifier(skill_library)
         human_validator = HumanValidator()
         audit_logger = AuditLogger()
-        backend = UR5MoveItPlanBackend(node=node, dry_run=False)
+        backend = UR5MoveItPlanBackend(node=node, dry_run=False, hardware_mode=hardware_mode)
 
         plan = _create_plan()
         _print_plan(plan)

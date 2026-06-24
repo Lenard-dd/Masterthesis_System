@@ -19,6 +19,7 @@ from llm_skill_robot.core.trajectory_reviewer import TrajectoryReviewer
 from llm_skill_robot.core.trajectory_validator import TrajectoryValidator
 from llm_skill_robot.robot.robotiq_2f140_sim_backend import Robotiq2F140SimBackend
 from llm_skill_robot.robot.ur5_moveit_plan_backend import UR5MoveItPlanBackend
+from llm_skill_robot.safety.hardware_mode import load_hardware_mode, print_hardware_mode
 from llm_skill_robot.perception.perception_factory import (
     create_perception_pipeline,
     load_perception_config,
@@ -254,6 +255,8 @@ def _execute_plan_steps(
 
 
 def main() -> None:
+    hardware_mode = load_hardware_mode()
+    print_hardware_mode(hardware_mode)
     print(LLM_RVIZ_SIM_WARNING)
     audit_logger = AuditLogger()
 
@@ -356,6 +359,7 @@ def main() -> None:
             dry_run=False,
             mode=execution_mode,
             execution_config=execution_config,
+            hardware_mode=hardware_mode,
         )
         step_results = _execute_plan_steps(
             plan=plan,
