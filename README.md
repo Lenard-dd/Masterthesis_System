@@ -362,6 +362,35 @@ ros2 run llm_skill_robot ros-graspgenx-plan-only-demo
 
 This demo derives pregrasp, grasp, and retreat poses, requests plan-only MoveIt trajectories, validates them, and publishes the resulting sequence to RViz for human review. It never calls MoveIt execution, never sends a trajectory to the UR5 controller, and never commands the real gripper. `hardware_mode.yaml` must keep real-arm execution disabled; even a positive confirmation cannot enable real-arm motion in this flow.
 
+## Unified hardware-safe perception and gripper demo
+
+The unified demo uses the real D435i camera, SAM3 and GraspGenX subprocesses, an explicitly confirmed real-gripper width test, and MoveIt/RViz plan-only previews. It never executes real UR5 arm motion.
+
+Terminal 1 — start the aligned real D435i streams:
+
+```bash
+ros2 launch realsense2_camera rs_launch.py enable_rgbd:=true enable_sync:=true align_depth.enable:=true enable_color:=true enable_depth:=true
+```
+
+Terminal 2 — start UR fake hardware and MoveIt/RViz. Each launch remains running, so use two tabs within this terminal session:
+
+```bash
+ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur5 robot_ip:=192.168.56.101 use_fake_hardware:=true launch_rviz:=false
+```
+
+```bash
+ros2 launch ur_moveit_config ur_moveit.launch.py ur_type:=ur5 launch_rviz:=true
+```
+
+Terminal 3 — inspect the real-gripper interfaces, then start the demo:
+
+```bash
+ros2 run llm_skill_robot ros-check-real-gripper
+ros2 run llm_skill_robot ros-hw-perception-gripper-demo
+```
+
+The camera data is real. The real gripper may move only after the selected candidate has been reviewed and the operator enters the exact, case-sensitive response `YES`. All UR5 pregrasp, approach, and retreat paths are planning/RViz previews only; no trajectory is sent to the real UR5 controller.
+
 ## Robotiq RViz Joint Diagnostics
 
 Before trying to animate the Robotiq 2F-140 in RViz, inspect the joint names being published on `/joint_states`:
