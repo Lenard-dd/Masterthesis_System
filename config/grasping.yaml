@@ -1,0 +1,15 @@
+grasping:
+  point_cloud:
+    output_dir: data/grasping/point_clouds
+    depth_scale: 0.001
+    min_depth_m: 0.05
+    max_depth_m: 2.0
+    max_points: 50000
+
+  graspgenx_subprocess:
+    enabled: true
+    conda_env: graspgenx
+    conda_executable: conda
+    runner_script: ""
+    timeout_sec: 120.0
+    output_dir: data/grasping/graspgenx_outputs

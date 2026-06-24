@@ -346,6 +346,14 @@ ros2 run llm_skill_robot ros-real-gripper-test
 
 The test prints every active width, speed, and force limit before accepting input. It shows a command preview and requires the exact, case-sensitive response `YES` before every real command. Safe close uses `safe_close_width_m` (`0.04 m` by default), never an implicit fully closed `0.0 m`. The CLI contains no UR5 arm backend or arm command path.
 
+To test only the width recommended by a GraspGenX candidate, configure the GraspGenX JSON runner in `config/grasping.yaml`, then run:
+
+```bash
+ros2 run llm_skill_robot ros-graspgenx-gripper-width-test
+```
+
+This flow detects an object with the real D435i and SAM3, builds its masked point cloud, selects the highest-scoring valid GraspGenX candidate, and reviews its `gripper_width_m`. It does not move to the candidate pose, execute MoveIt, or command any UR5 arm joint. The only possible hardware action is setting the real gripper width after the value passes `hardware_mode.yaml` limits and the operator types the exact response `YES`. Missing point clouds, candidates, or candidate widths stop the flow without a command.
+
 ## Robotiq RViz Joint Diagnostics
 
 Before trying to animate the Robotiq 2F-140 in RViz, inspect the joint names being published on `/joint_states`:
