@@ -19,7 +19,10 @@ class Robotiq2F140SimBackend:
             gripper_config.get("default_open_width_m", self.max_width_m)
         )
         self.default_close_width_m = float(
-            gripper_config.get("default_close_width_m", self.min_width_m)
+            gripper_config.get(
+                "default_close_width_m",
+                gripper_config.get("safe_close_width_m", self.min_width_m),
+            )
         )
         self.default_speed_mps = float(gripper_config.get("default_speed_mps", 0.03))
         self.default_force_N = float(gripper_config.get("default_force_N", 20.0))

@@ -1,17 +1,20 @@
 gripper:
   type: robotiq_2f_140
+  mode: real_hardware
   max_width_m: 0.14
   min_width_m: 0.0
   default_open_width_m: 0.14
-  default_close_width_m: 0.0
-  default_speed_mps: 0.03
-  default_force_N: 20.0
-  control_mode: rviz_sim
-  real_gripper_enabled: false
-  expected_joint_keywords:
-    - robotiq
-    - finger
-    - gripper
-  expected_base_frames:
-    - robotiq_2f140_base_link
-    - robotiq_arg2f_base_link
+  safe_close_width_m: 0.04
+  default_speed_mps: 0.02
+  default_force_N: 10.0
+  max_speed_mps: 0.03
+  max_force_N: 20.0
+  real_gripper_enabled: true
+
+  driver:
+    interface_type: auto
+    command_topic: ""
+    state_topic: ""
+    action_name: ""
+    service_name: ""
+    width_unit: meters
