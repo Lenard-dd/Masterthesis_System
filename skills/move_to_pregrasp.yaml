@@ -1,0 +1,11 @@
+skill_id: "move_to_pregrasp"
+name: "Plan To Pregrasp"
+description: "Create a plan-only pregrasp trajectory and optional RViz preview; never execute it"
+parameters:
+  - name: "object_id"
+    type: "string"
+    required: true
+preconditions: ["grasp_candidate_reviewed"]
+effects: ["pregrasp_preview_available"]
+execution:
+  backend_method: "plan_to_pregrasp"

@@ -1,0 +1,33 @@
+skill_id: "test_gripper_width"
+name: "Test Candidate Gripper Width"
+description: "Resolve the reviewed candidate width and test only the real gripper after exact YES confirmation"
+parameters:
+  - name: "object_id"
+    type: "string"
+    required: true
+  - name: "candidate_id"
+    type: "string"
+    required: false
+  - name: "width_m"
+    type: "float"
+    required: false
+    min_value: 0.0
+    max_value: 0.14
+  - name: "speed_mps"
+    type: "float"
+    required: false
+    default: 0.02
+    min_value: 0.0
+    max_value: 0.03
+  - name: "force_N"
+    type: "float"
+    required: false
+    default: 10.0
+    min_value: 0.0
+    max_value: 20.0
+preconditions:
+  - "grasp_candidate_reviewed"
+effects:
+  - "candidate_gripper_width_tested"
+execution:
+  backend_method: "test_gripper_width"

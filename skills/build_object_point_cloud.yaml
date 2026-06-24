@@ -1,0 +1,13 @@
+skill_id: "build_object_point_cloud"
+name: "Build Object Point Cloud"
+description: "Build a masked object point cloud from D435i aligned depth and a reviewed SAM3 detection"
+parameters:
+  - name: "object_id"
+    type: "string"
+    required: true
+preconditions:
+  - "object_detected"
+effects:
+  - "object_point_cloud_available"
+execution:
+  backend_method: "build_object_point_cloud"

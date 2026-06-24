@@ -1,6 +1,6 @@
 skill_id: "pick_object"
 name: "Pick Object"
-description: "Pick up an object at the current position"
+description: "Legacy logical pick skill for mock simulation only; direct hardware execution is blocked in arm-safe mode"
 parameters:
   - name: "object_id"
     type: "string"

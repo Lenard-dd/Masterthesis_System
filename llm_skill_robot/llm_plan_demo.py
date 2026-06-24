@@ -68,11 +68,12 @@ def _available_skill_objects(skill_library: SkillLibrary) -> list:
 
 
 def main() -> None:
-    print_hardware_mode(load_hardware_mode())
+    hardware_mode = load_hardware_mode()
+    print_hardware_mode(hardware_mode)
     audit_logger = AuditLogger()
     llm_config = load_llm_config().get("llm", {})
     skill_library = SkillLibrary()
-    plan_verifier = PlanVerifier(skill_library)
+    plan_verifier = PlanVerifier(skill_library, hardware_mode=hardware_mode)
     human_validator = HumanValidator()
 
     _print_available_skills(skill_library)

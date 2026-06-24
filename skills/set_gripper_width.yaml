@@ -1,6 +1,6 @@
 skill_id: "set_gripper_width"
 name: "Set Gripper Width"
-description: "Set the Robotiq 2F-140 gripper width for planning and RViz/fake-hardware simulation"
+description: "Set a validated Robotiq width; a real command is blocked until exact trusted human confirmation"
 parameters:
   - name: "width_m"
     type: "float"
@@ -10,11 +10,11 @@ parameters:
   - name: "speed_mps"
     type: "float"
     required: false
-    default: 0.03
+    default: 0.02
   - name: "force_N"
     type: "float"
     required: false
-    default: 20.0
+    default: 10.0
 preconditions:
   - "gripper_available"
 effects:

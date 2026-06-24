@@ -1,6 +1,6 @@
 skill_id: "open_gripper"
 name: "Open Gripper"
-description: "Open the Robotiq 2F-140 gripper in RViz/fake-hardware simulation"
+description: "Open the Robotiq 2F-140 within hardware limits; real hardware requires trusted human confirmation"
 parameters:
   - name: "width_m"
     type: "float"
@@ -11,11 +11,11 @@ parameters:
   - name: "speed_mps"
     type: "float"
     required: false
-    default: 0.03
+    default: 0.02
   - name: "force_N"
     type: "float"
     required: false
-    default: 20.0
+    default: 10.0
 preconditions:
   - "gripper_available"
 effects:

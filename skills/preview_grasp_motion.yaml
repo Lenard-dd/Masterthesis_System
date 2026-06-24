@@ -1,0 +1,17 @@
+skill_id: "preview_grasp_motion"
+name: "Preview Grasp Motion"
+description: "Plan and publish pregrasp, approach, or retreat in RViz only; never execute real-arm motion"
+parameters:
+  - name: "object_id"
+    type: "string"
+    required: true
+  - name: "stage"
+    type: "string"
+    required: true
+    allowed_values: ["pregrasp", "approach", "retreat"]
+preconditions:
+  - "grasp_candidate_reviewed"
+effects:
+  - "grasp_motion_previewed"
+execution:
+  backend_method: "preview_grasp_motion"

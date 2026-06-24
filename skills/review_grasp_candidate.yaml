@@ -1,0 +1,16 @@
+skill_id: "review_grasp_candidate"
+name: "Review Grasp Candidate"
+description: "Print the selected grasp candidate and require trusted human approval before any later hardware stage"
+parameters:
+  - name: "object_id"
+    type: "string"
+    required: true
+  - name: "candidate_id"
+    type: "string"
+    required: false
+preconditions:
+  - "grasp_candidates_available"
+effects:
+  - "grasp_candidate_reviewed"
+execution:
+  backend_method: "review_grasp_candidate"

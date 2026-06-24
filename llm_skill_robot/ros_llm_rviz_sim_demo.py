@@ -54,7 +54,7 @@ def _available_skill_objects(skill_library: SkillLibrary) -> list:
     ]
 
 
-def _create_llm_plan_generator():
+def _create_llm_plan_generator(hardware_mode=None):
     llm_config = load_llm_config().get("llm", {})
     llm_client = OpenAILLMClient(
         model=llm_config.get("model"),
@@ -62,7 +62,7 @@ def _create_llm_plan_generator():
         max_retries=llm_config.get("max_retries"),
         timeout_sec=llm_config.get("timeout_sec"),
     )
-    return LLMPlanGenerator(llm_client)
+    return LLMPlanGenerator(llm_client, hardware_mode=hardware_mode)
 
 
 def _generate_and_verify_plan(
@@ -317,8 +317,8 @@ def main() -> None:
             },
         )
 
-        generator = _create_llm_plan_generator()
-        plan_verifier = PlanVerifier(skill_library)
+        generator = _create_llm_plan_generator(hardware_mode=hardware_mode)
+        plan_verifier = PlanVerifier(skill_library, hardware_mode=hardware_mode)
         plan, verification_result = _generate_and_verify_plan(
             user_instruction=user_instruction,
             generator=generator,

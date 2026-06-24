@@ -1,6 +1,6 @@
 skill_id: "move_to_named_target"
 name: "Move to Named Target"
-description: "Move the robot arm to a predefined named position"
+description: "Plan or preview a predefined arm target; real-arm execution is disabled in arm-safe mode"
 parameters:
   - name: "target_name"
     type: "string"

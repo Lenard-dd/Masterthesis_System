@@ -6,16 +6,43 @@ from .plan import RobotPlan
 from .schemas import VerificationResult, VerificationDecision
 from ..perception.scene_model import SceneModel, SceneObject
 from ..utils import get_config_dir
+from ..safety.hardware_mode import (
+    HardwareMode,
+    clamp_or_reject_gripper_command,
+)
 
 
 class PlanVerifier:
-    def __init__(self, skill_library: SkillLibrary, config_dir: str = None):
+    REAL_GRIPPER_SKILLS = {
+        "open_gripper", "close_gripper", "set_gripper_width", "test_gripper_width"
+    }
+    CANDIDATE_GRIPPER_SKILLS = {"set_gripper_width", "test_gripper_width"}
+    PLAN_ONLY_ARM_SKILLS = {
+        "move_to_named_target",
+        "move_to_pregrasp",
+        "approach_grasp",
+        "retreat_grasp",
+        "preview_grasp_motion",
+    }
+    REAL_ARM_EXECUTION_SKILLS = {
+        "execute_trajectory",
+        "execute_arm_motion",
+        "move_real_arm",
+    }
+
+    def __init__(
+        self,
+        skill_library: SkillLibrary,
+        config_dir: str = None,
+        hardware_mode: HardwareMode | None = None,
+    ):
         self.skill_library = skill_library
         if config_dir is None:
             self.config_dir = get_config_dir()
         else:
             self.config_dir = Path(config_dir)
         self.robot_capabilities = self.load_robot_capabilities()
+        self.hardware_mode = hardware_mode
 
     def load_robot_capabilities(self) -> Dict[str, Any]:
         """Load robot capabilities from config."""
@@ -30,6 +57,7 @@ class PlanVerifier:
         context = context or {}
         reasons = []
         warnings = []
+        hardware_mode = self._hardware_mode_from_context(context) or self.hardware_mode
 
         for step in plan.steps:
             skill = self.skill_library.get_skill(step.skill_id)
@@ -81,9 +109,19 @@ class PlanVerifier:
             if step.skill_id == "detect_object":
                 self._verify_detect_object_context(context, warnings)
             elif step.skill_id == "pick_object":
-                self._verify_pick_object_context(step, context, reasons)
+                if hardware_mode is not None:
+                    reasons.append(
+                        "pick_object direct execution is blocked in arm-safe hardware mode."
+                    )
+                else:
+                    self._verify_pick_object_context(step, context, reasons)
             elif step.skill_id == "place_object":
                 self._verify_place_object_context(step, context, reasons, warnings)
+
+            if hardware_mode is not None:
+                self._verify_hardware_mode_step(
+                    step, hardware_mode, context, reasons, warnings
+                )
 
         # Simple robot capabilities check (placeholder)
         # For now, just check if there are any capabilities defined
@@ -98,6 +136,85 @@ class PlanVerifier:
 
         decision = VerificationDecision.BLOCK if reasons else VerificationDecision.ALLOW
         return VerificationResult(decision=decision, reasons=reasons, warnings=warnings)
+
+    def _verify_hardware_mode_step(
+        self,
+        step,
+        mode: HardwareMode,
+        context: Dict[str, Any],
+        reasons: list[str],
+        warnings: list[str],
+    ) -> None:
+        if step.skill_id in self.REAL_ARM_EXECUTION_SKILLS:
+            reasons.append("Real arm execution is disabled by hardware_mode.yaml.")
+        if step.parameters.get("execution_mode") == "real_robot" or step.parameters.get("execute") is True:
+            reasons.append("Real arm execution request is blocked by hardware_mode.yaml.")
+        if any(
+            step.parameters.get(key) is True
+            for key in ("real_arm_execution", "allow_arm_execution", "send_trajectory")
+        ):
+            reasons.append("Real arm trajectory execution is blocked by hardware_mode.yaml.")
+        if step.skill_id in self.PLAN_ONLY_ARM_SKILLS:
+            if not mode.arm.allow_plan_only:
+                reasons.append("Arm plan-only preview is disabled by hardware_mode.yaml.")
+            if step.parameters.get("plan_only") is False:
+                reasons.append(f"{step.skill_id} must remain plan-only in arm-safe mode.")
+            requested_mode = context.get("arm_execution_mode")
+            if step.skill_id != "move_to_named_target" and requested_mode not in {
+                None, "dry_run", "plan_only"
+            }:
+                reasons.append(f"{step.skill_id} may use only a plan-only backend.")
+            if requested_mode == "real_robot":
+                reasons.append("Real arm execution is disabled by hardware_mode.yaml.")
+
+        if step.skill_id in self.REAL_GRIPPER_SKILLS:
+            width = step.parameters.get("width_m")
+            if width is not None:
+                try:
+                    clamp_or_reject_gripper_command(
+                        width_m=width,
+                        speed_mps=step.parameters.get("speed_mps", 0.02),
+                        force_N=step.parameters.get("force_N", 10.0),
+                        mode=mode,
+                    )
+                except (ValueError, PermissionError) as exc:
+                    reasons.append(f"Unsafe real gripper command: {exc}")
+            elif step.skill_id == "set_gripper_width":
+                reasons.append("set_gripper_width requires a validated width_m.")
+
+            if not self._trusted_confirmation_for_step(step, context):
+                reasons.append(
+                    f"{step.skill_id} requires exact trusted YES confirmation at execution time."
+                )
+
+        later_hardware_stage = step.skill_id in (
+            self.CANDIDATE_GRIPPER_SKILLS | self.PLAN_ONLY_ARM_SKILLS
+        ) and step.skill_id != "move_to_named_target"
+        if later_hardware_stage and not context.get("grasp_candidate_approved", False):
+            reasons.append(
+                f"{step.skill_id} requires a reviewed and human-approved grasp candidate."
+            )
+
+        raw_keys = {
+            "ros_command", "command_topic", "action_name", "service_name", "driver_command"
+        }.intersection(step.parameters)
+        if raw_keys:
+            reasons.append(
+                "Raw ROS or gripper driver parameters are forbidden: "
+                + ", ".join(sorted(raw_keys))
+            )
+
+    @staticmethod
+    def _trusted_confirmation_for_step(step, context: Dict[str, Any]) -> bool:
+        confirmations = context.get("gripper_confirmations", {})
+        if isinstance(confirmations, dict) and confirmations.get(str(step.step_id)) == "YES":
+            return True
+        return context.get("gripper_confirmation") == "YES"
+
+    @staticmethod
+    def _hardware_mode_from_context(context: Dict[str, Any]) -> HardwareMode | None:
+        value = context.get("hardware_mode_object")
+        return value if isinstance(value, HardwareMode) else None
 
     def check_parameter_type(self, value: Any, expected_type: str) -> bool:
         """Check if a parameter value matches the expected type."""

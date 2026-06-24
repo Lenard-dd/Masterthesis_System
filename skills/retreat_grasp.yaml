@@ -1,0 +1,11 @@
+skill_id: "retreat_grasp"
+name: "Plan Grasp Retreat"
+description: "Create a plan-only retreat trajectory and optional RViz preview; never execute it"
+parameters:
+  - name: "object_id"
+    type: "string"
+    required: true
+preconditions: ["approach_preview_available"]
+effects: ["retreat_preview_available"]
+execution:
+  backend_method: "plan_retreat_grasp"

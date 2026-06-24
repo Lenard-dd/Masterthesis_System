@@ -247,6 +247,10 @@ def _audit_perception_result(
             "message": result.get("message"),
             "objects_count": len(result.get("objects", [])),
             "scene_updated": bool(result.get("scene") is not None),
+            "real_camera_used": (
+                result.get("status") == "SUCCESS"
+                and (result.get("scene") or {}).get("source") == "d435i_sam3"
+            ),
             "result": result,
         },
     )

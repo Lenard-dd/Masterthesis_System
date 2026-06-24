@@ -133,6 +133,30 @@ class Robotiq2F140RealBackend:
             extra_output=output,
         )
 
+    def test_gripper_width(
+        self,
+        width_m: float | None = None,
+        speed_mps: float | None = None,
+        force_N: float | None = None,
+        **kwargs: Any,
+    ) -> dict:
+        """Execute the reviewed candidate width through the same safety gate."""
+        if width_m is None:
+            return self._result(
+                False,
+                "Reviewed candidate gripper_width_m has not been resolved.",
+                status="REJECTED",
+            )
+        kwargs.pop("object_id", None)
+        kwargs.pop("candidate_id", None)
+        return self.set_gripper_width(
+            width_m=width_m,
+            speed_mps=speed_mps,
+            force_N=force_N,
+            command="test_gripper_width",
+            **kwargs,
+        )
+
     def get_gripper_state(self, **kwargs: Any) -> dict:
         state_topic = str(self.driver_config.get("state_topic", "")).strip()
         # A command target is not feedback. A typed state adapter will populate

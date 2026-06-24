@@ -1,0 +1,11 @@
+skill_id: "approach_grasp"
+name: "Plan Grasp Approach"
+description: "Create a plan-only grasp approach trajectory and optional RViz preview; never execute it"
+parameters:
+  - name: "object_id"
+    type: "string"
+    required: true
+preconditions: ["pregrasp_preview_available"]
+effects: ["approach_preview_available"]
+execution:
+  backend_method: "plan_approach_grasp"

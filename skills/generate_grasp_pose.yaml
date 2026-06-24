@@ -1,0 +1,13 @@
+skill_id: "generate_grasp_pose"
+name: "Generate Grasp Pose"
+description: "Generate scored GraspGenX candidates through the configured subprocess; does not move hardware"
+parameters:
+  - name: "object_id"
+    type: "string"
+    required: true
+preconditions:
+  - "object_point_cloud_available"
+effects:
+  - "grasp_candidates_available"
+execution:
+  backend_method: "generate_grasp_pose"
