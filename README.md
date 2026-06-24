@@ -337,6 +337,15 @@ ros2 run llm_skill_robot ros-check-real-gripper
 
 This diagnostic prints the active hardware safety settings, the driver configuration, and matching topics/actions/services containing `robotiq`, `gripper`, or `finger`. It never constructs the real backend or sends a command. Real UR5 arm execution remains disabled by `config/hardware_mode.yaml`.
 
+After configuring and checking the installed driver, start the interactive real-gripper test:
+
+```bash
+ros2 run llm_skill_robot ros-check-real-gripper
+ros2 run llm_skill_robot ros-real-gripper-test
+```
+
+The test prints every active width, speed, and force limit before accepting input. It shows a command preview and requires the exact, case-sensitive response `YES` before every real command. Safe close uses `safe_close_width_m` (`0.04 m` by default), never an implicit fully closed `0.0 m`. The CLI contains no UR5 arm backend or arm command path.
+
 ## Robotiq RViz Joint Diagnostics
 
 Before trying to animate the Robotiq 2F-140 in RViz, inspect the joint names being published on `/joint_states`:
