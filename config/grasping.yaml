@@ -13,3 +13,10 @@ grasping:
     runner_script: ""
     timeout_sec: 120.0
     output_dir: data/grasping/graspgenx_outputs
+
+  plan_only_preview:
+    pregrasp_distance_m: 0.10
+    retreat_distance_m: 0.10
+    retreat_vector: [0.0, 0.0, 1.0]
+    velocity_scale: 0.05
+    acceleration_scale: 0.05

@@ -16,6 +16,26 @@ class Pymoveit2NoPlanApiBackend(UR5MoveItPlanBackend):
         return True
 
 
+class FakeJointTrajectory:
+    joint_names = ["joint_1"]
+    points = []
+
+
+class FakeRobotTrajectory:
+    joint_trajectory = FakeJointTrajectory()
+
+
+class FakePosePlanResponse:
+    trajectory = FakeRobotTrajectory()
+    trajectory_start = object()
+
+
+class PosePlanServiceBackend(UR5MoveItPlanBackend):
+    def _request_moveit_pose_plan_service(self, **kwargs):
+        self.pose_request = kwargs
+        return FakePosePlanResponse()
+
+
 def test_plan_to_named_target_returns_success_in_dry_run_mode():
     backend = UR5MoveItPlanBackend(dry_run=True)
 
@@ -77,6 +97,22 @@ def test_plan_to_pose_returns_success_in_dry_run_mode():
     assert result["summary"]["target_pose"]["frame"] == "base_link"
     assert result["summary"]["target_pose"]["position"]["x"] == 0.4
     assert result["plan_id"] in backend.plan_cache
+
+
+def test_pose_plan_only_service_result_is_cached_without_execution():
+    backend = PosePlanServiceBackend(dry_run=False, node=object(), execution_mode="plan_only")
+
+    result = backend.plan_to_pose(
+        frame="base_link",
+        position={"x": 0.4, "y": 0.0, "z": 0.3},
+        orientation={"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+    )
+
+    assert result["success"] is True
+    assert result["summary"]["target_type"] == "pose"
+    cached = backend.get_plan(result["plan_id"])
+    assert cached.robot_trajectory is FakePosePlanResponse.trajectory
+    assert backend.pose_request["frame"] == "base_link"
 
 
 def test_pymoveit2_unavailable_returns_clear_failure():

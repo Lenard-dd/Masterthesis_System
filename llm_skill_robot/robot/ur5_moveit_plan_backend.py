@@ -10,7 +10,11 @@ import yaml
 
 from llm_skill_robot.core.execution_mode import is_execution_allowed, load_execution_config
 from llm_skill_robot.core.schemas import MotionPlanCacheEntry, MotionPlanSummary
-from llm_skill_robot.safety.hardware_mode import HardwareMode, load_hardware_mode
+from llm_skill_robot.safety.hardware_mode import (
+    HardwareMode,
+    assert_arm_execution_allowed,
+    load_hardware_mode,
+)
 from llm_skill_robot.utils import get_config_dir
 
 PYMOVEIT2_UNAVAILABLE_MESSAGE = (
@@ -348,6 +352,16 @@ class UR5MoveItPlanBackend:
         trajectory_review_approved: bool = False,
     ) -> Dict[str, Any]:
         """Execute a cached plan only in RViz/fake-hardware simulation mode."""
+        if self.execution_mode == "real_robot":
+            try:
+                assert_arm_execution_allowed(self.hardware_mode)
+            except PermissionError as exc:
+                return self._execution_result(
+                    success=False,
+                    message=f"{exc} Only rviz_sim execution may be used here.",
+                    plan_id=plan_id,
+                    output={},
+                )
         if not self.hardware_mode.arm.allow_rviz_fake_execution:
             return self._execution_result(
                 success=False,
@@ -690,22 +704,154 @@ class UR5MoveItPlanBackend:
             "position": dict(position),
             "orientation": dict(orientation),
         }
-        if not self._pymoveit2_interface_available():
+        plan_id = self._new_plan_id()
+        plan_result = self._request_moveit_pose_plan_service(
+            frame=frame,
+            position=position,
+            orientation=orientation,
+            velocity_scale=velocity_scale,
+            acceleration_scale=acceleration_scale,
+            start_state=kwargs.get("start_state"),
+            position_tolerance=float(kwargs.get("position_tolerance", 0.005)),
+            orientation_tolerance=float(kwargs.get("orientation_tolerance", 0.05)),
+        )
+        if plan_result is None:
             return self._failure_result(
                 target_type="pose",
                 target_pose=target_pose,
-                message=self._pymoveit2_error or PYMOVEIT2_UNAVAILABLE_MESSAGE,
+                message=self._pymoveit2_error or "MoveIt pose planning service is unavailable.",
                 skill_id=kwargs.get("skill_id", "move_to_pose"),
                 step_id=kwargs.get("step_id"),
+                plan_id=plan_id,
             )
 
-        return self._failure_result(
+        summary = self._summary_from_plan_result(
+            plan_id=plan_id,
             target_type="pose",
+            target_name=None,
             target_pose=target_pose,
-            message="pymoveit2 pose plan-only support is not implemented in this backend yet.",
+            plan_result=plan_result,
+        )
+        entry = self._cache_plan(
+            summary=summary,
             skill_id=kwargs.get("skill_id", "move_to_pose"),
             step_id=kwargs.get("step_id"),
+            raw_plan_available=summary.success,
+            robot_trajectory=self._extract_robot_trajectory(plan_result),
+            joint_trajectory=self._extract_joint_trajectory(plan_result),
+            trajectory_start=self._extract_trajectory_start(plan_result),
         )
+        return self._result_from_entry(entry)
+
+    def _request_moveit_pose_plan_service(
+        self,
+        frame: str,
+        position: dict,
+        orientation: dict,
+        velocity_scale: float,
+        acceleration_scale: float,
+        start_state=None,
+        position_tolerance: float = 0.005,
+        orientation_tolerance: float = 0.05,
+    ):
+        """Request a pose-constrained MoveIt plan without executing it."""
+        if self.node is None or not hasattr(self.node, "create_client"):
+            return None
+        try:
+            import rclpy
+            from geometry_msgs.msg import Pose
+            from moveit_msgs.msg import (
+                BoundingVolume,
+                Constraints,
+                OrientationConstraint,
+                PositionConstraint,
+            )
+            from moveit_msgs.srv import GetMotionPlan
+            from shape_msgs.msg import SolidPrimitive
+        except Exception as exc:
+            self._pymoveit2_error = f"MoveIt pose planning service types are unavailable: {exc}"
+            return None
+
+        try:
+            client = self.node.create_client(GetMotionPlan, "/plan_kinematic_path")
+            if not client.wait_for_service(timeout_sec=2.0):
+                self._pymoveit2_error = "MoveIt planning service /plan_kinematic_path is not available."
+                return None
+
+            request = GetMotionPlan.Request()
+            motion_request = request.motion_plan_request
+            motion_request.group_name = self.planning_group
+            motion_request.num_planning_attempts = 1
+            motion_request.allowed_planning_time = 5.0
+            motion_request.max_velocity_scaling_factor = float(velocity_scale)
+            motion_request.max_acceleration_scaling_factor = float(acceleration_scale)
+            if start_state is not None:
+                motion_request.start_state = start_state
+
+            goal = Constraints()
+            position_constraint = PositionConstraint()
+            position_constraint.header.frame_id = frame
+            position_constraint.link_name = self.ee_frame
+            region = BoundingVolume()
+            primitive = SolidPrimitive()
+            primitive.type = SolidPrimitive.BOX
+            primitive.dimensions = [position_tolerance * 2.0] * 3
+            region.primitives.append(primitive)
+            region_pose = Pose()
+            region_pose.position.x = float(position["x"])
+            region_pose.position.y = float(position["y"])
+            region_pose.position.z = float(position["z"])
+            region_pose.orientation.w = 1.0
+            region.primitive_poses.append(region_pose)
+            position_constraint.constraint_region = region
+            position_constraint.weight = 1.0
+            goal.position_constraints.append(position_constraint)
+
+            orientation_constraint = OrientationConstraint()
+            orientation_constraint.header.frame_id = frame
+            orientation_constraint.link_name = self.ee_frame
+            orientation_constraint.orientation.x = float(orientation.get("x", 0.0))
+            orientation_constraint.orientation.y = float(orientation.get("y", 0.0))
+            orientation_constraint.orientation.z = float(orientation.get("z", 0.0))
+            orientation_constraint.orientation.w = float(orientation.get("w", 1.0))
+            orientation_constraint.absolute_x_axis_tolerance = orientation_tolerance
+            orientation_constraint.absolute_y_axis_tolerance = orientation_tolerance
+            orientation_constraint.absolute_z_axis_tolerance = orientation_tolerance
+            orientation_constraint.weight = 1.0
+            goal.orientation_constraints.append(orientation_constraint)
+            motion_request.goal_constraints.append(goal)
+
+            future = client.call_async(request)
+            rclpy.spin_until_future_complete(self.node, future, timeout_sec=10.0)
+            if not future.done() or future.result() is None:
+                self._pymoveit2_error = "MoveIt pose planning service returned no response."
+                return None
+            return future.result().motion_plan_response
+        except Exception as exc:
+            self._pymoveit2_error = f"MoveIt pose planning service request failed: {exc}"
+            return None
+
+    def get_plan_end_state(self, plan_id: str):
+        """Build a RobotState from a cached trajectory's final point."""
+        cached = self.get_cached_plan(plan_id)
+        extraction = extract_joint_trajectory(cached)
+        if not extraction.success:
+            return None
+        trajectory = extraction.joint_trajectory
+        points = list(getattr(trajectory, "points", []) or [])
+        joint_names = list(getattr(trajectory, "joint_names", []) or [])
+        positions = list(getattr(points[-1], "positions", []) or []) if points else []
+        if not joint_names or len(positions) != len(joint_names):
+            return None
+        try:
+            from moveit_msgs.msg import RobotState
+        except Exception:
+            return None
+        state = RobotState()
+        state.joint_state.name = joint_names
+        state.joint_state.position = positions
+        state.is_diff = True
+        return state
 
     def _ensure_node(self) -> bool:
         if self.node is not None:

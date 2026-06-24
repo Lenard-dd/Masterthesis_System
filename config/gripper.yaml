@@ -12,9 +12,9 @@ gripper:
   real_gripper_enabled: true
 
   driver:
-    interface_type: auto
+    interface_type: dry_run
     command_topic: ""
-    state_topic: ""
-    action_name: ""
-    service_name: ""
+    state_topic: /gripper_state
+    action_name: /gripper_controller/gripper_cmd
+    service_name: /set_gripper_distance
     width_unit: meters

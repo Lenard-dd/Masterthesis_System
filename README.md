@@ -354,6 +354,14 @@ ros2 run llm_skill_robot ros-graspgenx-gripper-width-test
 
 This flow detects an object with the real D435i and SAM3, builds its masked point cloud, selects the highest-scoring valid GraspGenX candidate, and reviews its `gripper_width_m`. It does not move to the candidate pose, execute MoveIt, or command any UR5 arm joint. The only possible hardware action is setting the real gripper width after the value passes `hardware_mode.yaml` limits and the operator types the exact response `YES`. Missing point clouds, candidates, or candidate widths stop the flow without a command.
 
+For a MoveIt plan-only preview of the selected GraspGenX pose, run:
+
+```bash
+ros2 run llm_skill_robot ros-graspgenx-plan-only-demo
+```
+
+This demo derives pregrasp, grasp, and retreat poses, requests plan-only MoveIt trajectories, validates them, and publishes the resulting sequence to RViz for human review. It never calls MoveIt execution, never sends a trajectory to the UR5 controller, and never commands the real gripper. `hardware_mode.yaml` must keep real-arm execution disabled; even a positive confirmation cannot enable real-arm motion in this flow.
+
 ## Robotiq RViz Joint Diagnostics
 
 Before trying to animate the Robotiq 2F-140 in RViz, inspect the joint names being published on `/joint_states`:
