@@ -12,9 +12,19 @@ gripper:
   real_gripper_enabled: true
 
   driver:
-    interface_type: dry_run
+    interface_type: action_gripper_command
     command_topic: ""
     state_topic: /gripper_state
+    state_message_type: std_msgs/msg/Float32
     action_name: /gripper_controller/gripper_cmd
     service_name: /set_gripper_distance
     width_unit: meters
+    action_position_unit: joint_radians
+    state_unit: joint_radians
+    open_joint_position: 0.0
+    closed_joint_position: 0.7
+    # GripperCommand has no speed field. This must match the controller/driver setting.
+    controller_speed_mps: 0.02
+    server_wait_timeout_sec: 2.0
+    command_timeout_sec: 10.0
+    state_wait_timeout_sec: 1.0

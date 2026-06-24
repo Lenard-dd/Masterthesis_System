@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+import time
 from typing import Any
 
 import yaml
@@ -60,6 +62,12 @@ class Robotiq2F140RealBackend:
         self.current_width_m: float | None = None
         self.last_command: dict[str, float] | None = None
         self._width_publisher = None
+        self._action_client = None
+        self._state_subscription = None
+        self._latest_feedback_width_m: float | None = None
+        self._latest_feedback_time: float | None = None
+        self._state_adapter_error: str | None = None
+        self._configure_state_feedback()
 
     def open_gripper(
         self,
@@ -120,7 +128,12 @@ class Robotiq2F140RealBackend:
 
         driver_result = self._send_driver_command(**safe_command)
         if driver_result.get("success", False):
-            self.current_width_m = safe_command["width_m"]
+            reported_width = driver_result.get("output", {}).get("current_width_m")
+            self.current_width_m = (
+                float(reported_width)
+                if reported_width is not None
+                else safe_command["width_m"]
+            )
             self.last_command = {"command": command_name, **safe_command}
 
         output = dict(driver_result.get("output", {}))
@@ -159,21 +172,27 @@ class Robotiq2F140RealBackend:
 
     def get_gripper_state(self, **kwargs: Any) -> dict:
         state_topic = str(self.driver_config.get("state_topic", "")).strip()
-        # A command target is not feedback. A typed state adapter will populate
-        # feedback in a later driver-specific integration step.
-        feedback_available = False
+        self._wait_for_state_feedback()
+        feedback_available = self._latest_feedback_width_m is not None
         if not state_topic:
             message = "Real gripper feedback topic is not configured."
+        elif self._state_adapter_error:
+            message = self._state_adapter_error
         elif not feedback_available:
-            message = "Real gripper feedback is not available."
+            message = f"No real gripper feedback received from {state_topic}."
         else:
-            message = "Real gripper state is available."
+            message = f"Real gripper state received from {state_topic}."
 
         return self._result(
             feedback_available,
             message,
             status="OK" if feedback_available else "NOT_AVAILABLE",
-            extra_output={"feedback_available": feedback_available},
+            extra_output={
+                "feedback_available": feedback_available,
+                "current_width_m": self._latest_feedback_width_m,
+                "state_topic": state_topic or None,
+                "feedback_age_sec": self._feedback_age_sec(),
+            },
         )
 
     def _send_driver_command(
@@ -215,6 +234,8 @@ class Robotiq2F140RealBackend:
             return self._publish_float_width(command)
         if interface_type == "topic_joint_trajectory":
             return self._publish_joint_trajectory(command)
+        if interface_type == "action_gripper_command":
+            return self._send_gripper_command_action(command)
         return {
             "success": False,
             "status": "NOT_AVAILABLE",
@@ -276,6 +297,294 @@ class Robotiq2F140RealBackend:
             "message": f"Real gripper joint trajectory published to {topic}.",
             "output": {"command_sent": True, "command_topic": topic},
         }
+
+    def _send_gripper_command_action(self, command: dict[str, float]) -> dict:
+        """Send one validated width through control_msgs/GripperCommand."""
+        action_name = str(self.driver_config.get("action_name", "")).strip()
+        if not action_name or self.node is None:
+            return self._driver_unavailable(
+                "action_gripper_command requires a node and driver.action_name."
+            )
+        configured_speed = self.driver_config.get("controller_speed_mps")
+        if configured_speed is None:
+            return self._driver_unavailable(
+                "action_gripper_command requires verified driver.controller_speed_mps "
+                "because GripperCommand has no speed field."
+            )
+        try:
+            configured_speed = float(configured_speed)
+        except (TypeError, ValueError):
+            return self._driver_unavailable("driver.controller_speed_mps must be numeric.")
+        if (
+            not math.isfinite(configured_speed)
+            or configured_speed < 0.0
+            or configured_speed > self.hardware_mode.gripper.max_speed_mps
+        ):
+            return self._driver_unavailable(
+                "driver.controller_speed_mps exceeds hardware_mode safety limits."
+            )
+        if configured_speed > command["speed_mps"]:
+            return {
+                "success": False,
+                "status": "REJECTED",
+                "message": (
+                    f"Controller speed {configured_speed} m/s exceeds requested "
+                    f"speed {command['speed_mps']} m/s."
+                ),
+                "output": {"command_sent": False, "action_name": action_name},
+            }
+        try:
+            import rclpy
+            from action_msgs.msg import GoalStatus
+            from control_msgs.action import GripperCommand
+            from rclpy.action import ActionClient
+        except Exception as exc:
+            return self._driver_unavailable(
+                f"GripperCommand action types are unavailable: {exc}"
+            )
+
+        try:
+            if self._action_client is None:
+                self._action_client = ActionClient(
+                    self.node, GripperCommand, action_name
+                )
+            server_timeout = float(
+                self.driver_config.get("server_wait_timeout_sec", 2.0)
+            )
+            if not self._action_client.wait_for_server(timeout_sec=server_timeout):
+                return self._driver_unavailable(
+                    f"GripperCommand action server is not available: {action_name}"
+                )
+
+            driver_position = self._driver_position_from_width(command["width_m"])
+            goal = GripperCommand.Goal()
+            goal.command.position = driver_position
+            goal.command.max_effort = command["force_N"]
+            command_timeout = float(
+                self.driver_config.get("command_timeout_sec", 10.0)
+            )
+            goal_future = self._action_client.send_goal_async(goal)
+            rclpy.spin_until_future_complete(
+                self.node, goal_future, timeout_sec=command_timeout
+            )
+            if not goal_future.done() or goal_future.result() is None:
+                return self._driver_unavailable(
+                    f"Timed out sending GripperCommand goal to {action_name}."
+                )
+
+            goal_handle = goal_future.result()
+            if not getattr(goal_handle, "accepted", False):
+                return {
+                    "success": False,
+                    "status": "REJECTED",
+                    "message": f"GripperCommand goal was rejected by {action_name}.",
+                    "output": {"command_sent": False, "action_name": action_name},
+                }
+
+            result_future = goal_handle.get_result_async()
+            rclpy.spin_until_future_complete(
+                self.node, result_future, timeout_sec=command_timeout
+            )
+            wrapped_result = result_future.result() if result_future.done() else None
+            if wrapped_result is None:
+                return {
+                    "success": False,
+                    "status": "TIMEOUT",
+                    "message": f"Timed out waiting for GripperCommand result from {action_name}.",
+                    "output": {"command_sent": True, "action_name": action_name},
+                }
+
+            action_result = getattr(wrapped_result, "result", None)
+            action_status = getattr(wrapped_result, "status", None)
+            succeeded = action_status == GoalStatus.STATUS_SUCCEEDED
+            result_position = getattr(action_result, "position", None)
+            if result_position is not None and math.isfinite(float(result_position)):
+                self._latest_feedback_width_m = self._width_from_driver_position(
+                    float(result_position)
+                )
+                self._latest_feedback_time = time.monotonic()
+            output = {
+                "command_sent": True,
+                "action_name": action_name,
+                "action_status": action_status,
+                "driver_position": result_position,
+                "commanded_driver_position": driver_position,
+                "current_width_m": self._latest_feedback_width_m,
+                "effort_N": getattr(action_result, "effort", None),
+                "stalled": bool(getattr(action_result, "stalled", False)),
+                "reached_goal": bool(getattr(action_result, "reached_goal", False)),
+                "speed_note": (
+                    "GripperCommand has no speed field; validated controller speed is "
+                    f"{configured_speed} m/s."
+                ),
+                "controller_speed_mps": configured_speed,
+            }
+            return {
+                "success": succeeded,
+                "status": "SUCCEEDED" if succeeded else "FAILED",
+                "message": (
+                    f"GripperCommand completed through {action_name}."
+                    if succeeded
+                    else f"GripperCommand failed through {action_name} with status {action_status}."
+                ),
+                "output": output,
+            }
+        except Exception as exc:
+            return self._driver_unavailable(
+                f"GripperCommand action failed safely: {exc}"
+            )
+
+    def _configure_state_feedback(self) -> None:
+        state_topic = str(self.driver_config.get("state_topic", "")).strip()
+        if not state_topic or self.node is None:
+            return
+        state_type = str(
+            self.driver_config.get("state_message_type", "std_msgs/msg/Float32")
+        ).strip().lower()
+        try:
+            if state_type == "std_msgs/msg/float32":
+                from std_msgs.msg import Float32
+
+                self._state_subscription = self.node.create_subscription(
+                    Float32, state_topic, self._on_float_state, 10
+                )
+            elif state_type == "std_msgs/msg/float64":
+                from std_msgs.msg import Float64
+
+                self._state_subscription = self.node.create_subscription(
+                    Float64, state_topic, self._on_float_state, 10
+                )
+            elif state_type == "sensor_msgs/msg/jointstate":
+                from sensor_msgs.msg import JointState
+
+                self._state_subscription = self.node.create_subscription(
+                    JointState, state_topic, self._on_joint_state, 10
+                )
+            else:
+                self._state_adapter_error = (
+                    f"Unsupported gripper state_message_type: {state_type!r}."
+                )
+        except Exception as exc:
+            self._state_adapter_error = (
+                f"Could not subscribe to real gripper state topic {state_topic}: {exc}"
+            )
+
+    def _on_float_state(self, message) -> None:
+        try:
+            state_value = float(message.data)
+        except (AttributeError, TypeError, ValueError):
+            return
+        if not math.isfinite(state_value):
+            return
+        try:
+            width = self._width_from_driver_position(state_value)
+        except ValueError:
+            return
+        self._latest_feedback_width_m = width
+        self._latest_feedback_time = time.monotonic()
+        self.current_width_m = width
+
+    def _on_joint_state(self, message) -> None:
+        position = self._extract_joint_state_position(message)
+        if position is None or not math.isfinite(position):
+            return
+        try:
+            width = self._width_from_driver_position(position)
+        except ValueError:
+            return
+        self._latest_feedback_width_m = width
+        self._latest_feedback_time = time.monotonic()
+        self.current_width_m = width
+
+    def _extract_joint_state_position(self, message) -> float | None:
+        joint_names = self.driver_config.get("state_joint_names")
+        if joint_names is None:
+            joint_names = self.driver_config.get("joint_names")
+        if isinstance(joint_names, str):
+            joint_names = [joint_names]
+        if joint_names:
+            names = [str(name) for name in joint_names]
+            positions = [
+                float(pos)
+                for name, pos in zip(message.name, message.position)
+                if name in names
+            ]
+            if positions:
+                return sum(positions) / len(positions)
+        try:
+            return float(message.position[0])
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return None
+
+    def _wait_for_state_feedback(self) -> None:
+        if self._latest_feedback_width_m is not None:
+            return
+        if self._state_subscription is None or self.node is None:
+            return
+        try:
+            import rclpy
+        except Exception:
+            return
+        timeout = max(
+            0.0, float(self.driver_config.get("state_wait_timeout_sec", 1.0))
+        )
+        deadline = time.monotonic() + timeout
+        while self._latest_feedback_width_m is None and time.monotonic() < deadline:
+            remaining = max(0.0, deadline - time.monotonic())
+            rclpy.spin_once(self.node, timeout_sec=min(0.1, remaining))
+
+    def _feedback_age_sec(self) -> float | None:
+        if self._latest_feedback_time is None:
+            return None
+        return max(0.0, time.monotonic() - self._latest_feedback_time)
+
+    def _driver_position_from_width(self, width_m: float) -> float:
+        unit = str(
+            self.driver_config.get("action_position_unit", "meters")
+        ).strip()
+        if unit == "meters":
+            return float(width_m)
+        if unit != "joint_radians":
+            raise ValueError(f"Unsupported action_position_unit: {unit!r}.")
+        open_position, closed_position = self._joint_position_limits()
+        width_span = self.hardware_mode.gripper.max_width_m - self.hardware_mode.gripper.min_width_m
+        if width_span <= 0.0:
+            raise ValueError("Hardware-mode gripper width span must be positive.")
+        closed_fraction = (
+            self.hardware_mode.gripper.max_width_m - float(width_m)
+        ) / width_span
+        return open_position + closed_fraction * (closed_position - open_position)
+
+    def _width_from_driver_position(self, position: float) -> float:
+        unit = str(self.driver_config.get("state_unit", "meters")).strip()
+        if unit == "meters":
+            return float(position)
+        if unit != "joint_radians":
+            raise ValueError(f"Unsupported state_unit: {unit!r}.")
+        open_position, closed_position = self._joint_position_limits()
+        joint_span = closed_position - open_position
+        if abs(joint_span) <= 1e-12:
+            raise ValueError("Configured gripper joint-position span must be non-zero.")
+        closed_fraction = (float(position) - open_position) / joint_span
+        tolerance = 1e-3
+        if closed_fraction < -tolerance or closed_fraction > 1.0 + tolerance:
+            raise ValueError("Gripper state is outside configured joint-position limits.")
+        closed_fraction = max(0.0, min(1.0, closed_fraction))
+        width_span = self.hardware_mode.gripper.max_width_m - self.hardware_mode.gripper.min_width_m
+        return self.hardware_mode.gripper.max_width_m - closed_fraction * width_span
+
+    def _joint_position_limits(self) -> tuple[float, float]:
+        try:
+            open_position = float(self.driver_config["open_joint_position"])
+            closed_position = float(self.driver_config["closed_joint_position"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                "joint_radians mapping requires open_joint_position and "
+                "closed_joint_position."
+            ) from exc
+        if not math.isfinite(open_position) or not math.isfinite(closed_position):
+            raise ValueError("Gripper joint-position limits must be finite.")
+        return open_position, closed_position
 
     @staticmethod
     def _confirmation_from_kwargs(kwargs: dict[str, Any]) -> bool:

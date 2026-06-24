@@ -325,11 +325,11 @@ Use this checklist when recording or documenting the thesis Milestone 1 demo:
 
 ## Robotiq 2F-140 Gripper Skills
 
-The project provides separate simulation and real-hardware Robotiq backends. The real backend is `Robotiq2F140RealBackend`; it remains fail-closed until its driver adapter is explicitly configured in `config/gripper.yaml`. The default `driver.interface_type: auto` does not guess installed Robotiq topics, actions, or services and returns `NOT_AVAILABLE` without sending a command.
+The project provides separate simulation and real-hardware Robotiq backends. The real backend is `Robotiq2F140RealBackend`; it remains fail-closed until its driver adapter is explicitly configured in `config/gripper.yaml`.
 
 Available gripper skills are `open_gripper`, `close_gripper`, `set_gripper_width`, and `get_gripper_state`. Every real command must be explicitly human-confirmed (`confirmed=True` or `human_confirmed=True`) and must pass the width, speed, and force limits in `config/hardware_mode.yaml`. Validation or confirmation failure never publishes a command. `close_gripper()` defaults to the configured `safe_close_width_m` of `0.04 m`; it does not silently command `0.0 m` on real hardware.
 
-Supported adapter modes are `dry_run`, `topic_float`, and explicitly mapped `topic_joint_trajectory`. Configure only the interface exposed by the installed driver. Before configuring it, inspect the ROS graph without moving the gripper:
+Supported adapter modes are `dry_run`, `topic_float`, explicitly mapped `topic_joint_trajectory`, and `action_gripper_command`. The current hardware configuration uses the discovered `control_msgs/action/GripperCommand` action `/gripper_controller/gripper_cmd` and subscribes to `/gripper_state` as `std_msgs/msg/Float32`. In this installed driver, both action position and state are `0.0–0.7 rad` finger-joint positions (`0.0` open, `0.7` closed), so the backend explicitly converts them to and from the public `0.0–0.14 m` gap-width API. Configure only interfaces confirmed by the diagnostic. Because `GripperCommand` has no speed field, `driver.controller_speed_mps` must match the real controller/driver setting and is checked against `hardware_mode.yaml` before sending. Before operating it, inspect the ROS graph without moving the gripper:
 
 ```bash
 ros2 run llm_skill_robot ros-check-real-gripper
