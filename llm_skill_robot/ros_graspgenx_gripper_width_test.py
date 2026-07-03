@@ -7,6 +7,7 @@ import sys
 from typing import Any
 
 import yaml
+import time
 
 from llm_skill_robot.grasping.graspgenx_grasp_planner import GraspGenXGraspPlanner
 from llm_skill_robot.grasping.graspgenx_subprocess_adapter import GraspGenXSubprocessAdapter
@@ -177,7 +178,62 @@ def main() -> None:
         if not query:
             print("No object query entered.")
             return
+
+        # Wait for RGB, depth, and camera_info messages to arrive
+        def _wait_for_camera_messages(backend, node, rclpy_module):
+            # allow a longer wait than configured (e.g., cameras may take time)
+            base = float(backend.config.get("wait_timeout_sec", 5.0))
+            timeout_sec = max(base * 3.0, 5.0)
+            deadline = time.monotonic() + timeout_sec
+            while time.monotonic() < deadline:
+                if (
+                    backend.latest_rgb_msg is not None
+                    and backend.latest_depth_msg is not None
+                    and backend.latest_camera_info_msg is not None
+                ):
+                    return
+                rclpy_module.spin_once(node, timeout_sec=0.1)
+
+        print("\nWaiting for D435i RGB/depth/camera_info messages...")
+        _wait_for_camera_messages(perception_pipeline.backend, node, rclpy)
+        # debug: print frame-received status and any debug message from backend
+        backend = perception_pipeline.backend
+        try:
+            print("Camera status:")
+            print(f"RGB received: {backend.get_rgb_frame().get('received')}")
+            print(f"Depth received: {backend.get_depth_frame().get('received')}")
+            print(f"CameraInfo received: {backend.get_camera_info().get('received')}")
+        except Exception:
+            print("Failed to query backend frame status.")
         detection = perception_pipeline.detect_object(query, require_pose=False)
+        # debug: print detection result status and any messages
+        try:
+            status = getattr(detection, 'status', None) or (detection.get('status') if isinstance(detection, dict) else None)
+            message = getattr(detection, 'message', None) or (detection.get('message') if isinstance(detection, dict) else None)
+            objs = None
+            if hasattr(detection, 'objects'):
+                objs = getattr(detection, 'objects')
+            elif isinstance(detection, dict):
+                objs = detection.get('objects', [])
+            objs = objs or []
+
+            print(f"Detector status: {status}")
+            print(f"Detector message: {message}")
+            print(f"Raw objects count: {len(objs)}")
+            for idx, obj in enumerate(objs, start=1):
+                if hasattr(obj, 'metadata'):
+                    md = getattr(obj, 'metadata', {}) or {}
+                    oid = getattr(obj, 'object_id', None)
+                elif isinstance(obj, dict):
+                    md = obj.get('metadata', {}) or {}
+                    oid = obj.get('object_id')
+                else:
+                    md = {}
+                    oid = None
+                print(f"  Object {idx}: id={oid} mask={md.get('mask_path')} overlay={md.get('overlay_path')}")
+        except Exception as exc:
+            print(f"Failed to print detector debug info: {exc}")
+
         selected_object = _select_highest_confidence(detection.get("objects", []))
         if selected_object is None:
             print("No object detected.")
@@ -198,7 +254,11 @@ def main() -> None:
             return
 
         generation = planner.generate_candidates(point_cloud["point_cloud_path"])
+        print(f"GraspGenX status: {generation.get('status')}")
+        if generation.get("message"):
+            print(f"GraspGenX message: {generation.get('message')}")
         candidates = generation.get("candidates", [])
+        print(f"GraspGenX candidates returned: {len(candidates)}")
         if not candidates:
             print(f"No GraspGenX candidates. {generation.get('message', '')}".strip())
             return

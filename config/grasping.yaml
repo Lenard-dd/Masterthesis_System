@@ -10,9 +10,22 @@ grasping:
     enabled: true
     conda_env: graspgenx
     conda_executable: conda
-    runner_script: ""
+    runner_script: scripts/graspgenx_zmq_runner.py
     timeout_sec: 120.0
     output_dir: data/grasping/graspgenx_outputs
+    server_host: localhost
+    server_port: 5556
+    gripper_name: robotiq_2f_140
+    num_grasps: 200
+    grasp_threshold: -1.0
+    topk_num_grasps: 100
+    timeout_ms: 60000
+    estimate_gripper_width: true
+    width_axis_index: 1
+    width_clearance_m: 0.01
+    # On small GPUs, run SAM3 detection first, then start/confirm the
+    # GraspGenX server before candidate generation to avoid VRAM contention.
+    require_server_confirmation: true
 
   plan_only_preview:
     pregrasp_distance_m: 0.10
@@ -20,3 +33,47 @@ grasping:
     retreat_vector: [0.0, 0.0, 1.0]
     velocity_scale: 0.05
     acceleration_scale: 0.05
+    moveit:
+      # Explicitly request a fast bidirectional planner instead of relying on
+      # the MoveIt default. You can try other planner IDs from your MoveIt OMPL
+      # config if RRTConnect still gives a long joint-space route.
+      planner_id: RRTConnectkConfigDefault
+      num_planning_attempts: 8
+      allowed_planning_time_sec: 8.0
+      service_timeout_sec: 15.0
+    # GraspGenX score alone does not guarantee that the UR5 can reach the
+    # candidate from its current joint state. Before previewing the full
+    # pregrasp/grasp/retreat sequence, test the top candidates with MoveIt
+    # plan-only requests and select one that is reachable and passes trajectory
+    # validation. This avoids choosing visually plausible but high joint-wrap
+    # candidates that create complex RViz paths or fail validation.
+    candidate_screening:
+      enabled: true
+      max_candidates: 12
+      variants: [full_pose, relaxed_orientation, position_only]
+      position_tolerance_m: 0.01
+      full_orientation_tolerance_rad: 0.05
+      relaxed_orientation_tolerance_rad: 0.75
+      allow_position_only_fallback: true
+    # GraspGenX reports a grasp / Robotiq gripper frame. MoveIt plans for the
+    # UR5 end-effector frame configured in config/ur5.yaml, normally tool0.
+    #
+    # Convention:
+    #   T_base_ee = T_base_grasp * T_grasp_ee
+    #
+    # translation_m is expressed in the GraspGenX grasp frame, not base_link.
+    # rotation_rpy_rad is roll/pitch/yaw from GraspGenX grasp frame to tool0.
+    #
+    # Source model:
+    #   /home/lenard/dev_ws/src/ur_src/ur5_launcher/urdf/camera_mount.urdf.xacro
+    #     tool0 -> camera_mount: xyz="0 0 0.004", rpy="0 0 0"
+    #   /home/lenard/dev_ws/src/ur_src/ur5_launcher/urdf/ur5_with_gripper.urdf.xacro
+    #   /home/lenard/dev_ws/src/ur_src/ros2_robotiq_gripper/robotiq_description/urdf/robotiq_2f_140_macro.urdf.xacro
+    #     camera_mount -> robotiq base: xyz="0 0 0", rpy="0 0 pi/2"
+    #
+    # Therefore this config applies the inverse transform, from GraspGenX /
+    # Robotiq gripper frame back to MoveIt's tool0 target frame.
+    grasp_frame_to_ee_frame:
+      enabled: true
+      translation_m: [0.0, 0.0, -0.004]
+      rotation_rpy_rad: [0.0, 0.0, 0.0]

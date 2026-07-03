@@ -29,6 +29,32 @@ PYMOVEIT2_TARGET_COMMAND_WARNING = (
     "No explicit trajectory preview available; pymoveit2 will execute target command "
     "in RViz/fake hardware only after final confirmation."
 )
+MOVEIT_ERROR_CODE_NAMES = {
+    1: "SUCCESS",
+    99999: "FAILURE",
+    -1: "PLANNING_FAILED",
+    -2: "INVALID_MOTION_PLAN",
+    -3: "MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE",
+    -4: "CONTROL_FAILED",
+    -5: "UNABLE_TO_AQUIRE_SENSOR_DATA",
+    -6: "TIMED_OUT",
+    -7: "PREEMPTED",
+    -10: "START_STATE_IN_COLLISION",
+    -11: "START_STATE_VIOLATES_PATH_CONSTRAINTS",
+    -12: "GOAL_IN_COLLISION",
+    -13: "GOAL_VIOLATES_PATH_CONSTRAINTS",
+    -14: "GOAL_CONSTRAINTS_VIOLATED",
+    -15: "INVALID_GROUP_NAME",
+    -16: "INVALID_GOAL_CONSTRAINTS",
+    -17: "INVALID_ROBOT_STATE",
+    -18: "INVALID_LINK_NAME",
+    -19: "INVALID_OBJECT_NAME",
+    -21: "FRAME_TRANSFORM_FAILURE",
+    -22: "COLLISION_CHECKING_UNAVAILABLE",
+    -23: "ROBOT_STATE_STALE",
+    -24: "SENSOR_INFO_STALE",
+    -31: "NO_IK_SOLUTION",
+}
 
 
 @dataclass(frozen=True)
@@ -536,7 +562,6 @@ class UR5MoveItPlanBackend:
         )
         if (
             self.execution_mode == "rviz_sim"
-            and summary.success
             and summary.num_trajectory_points <= 0
         ):
             return self._cache_pymoveit2_target_command(
@@ -714,6 +739,13 @@ class UR5MoveItPlanBackend:
             start_state=kwargs.get("start_state"),
             position_tolerance=float(kwargs.get("position_tolerance", 0.005)),
             orientation_tolerance=float(kwargs.get("orientation_tolerance", 0.05)),
+            use_orientation_constraint=bool(
+                kwargs.get("use_orientation_constraint", True)
+            ),
+            planner_id=kwargs.get("planner_id", ""),
+            num_planning_attempts=int(kwargs.get("num_planning_attempts", 1)),
+            allowed_planning_time=float(kwargs.get("allowed_planning_time", 5.0)),
+            service_timeout_sec=float(kwargs.get("service_timeout_sec", 10.0)),
         )
         if plan_result is None:
             return self._failure_result(
@@ -753,6 +785,11 @@ class UR5MoveItPlanBackend:
         start_state=None,
         position_tolerance: float = 0.005,
         orientation_tolerance: float = 0.05,
+        use_orientation_constraint: bool = True,
+        planner_id: str = "",
+        num_planning_attempts: int = 1,
+        allowed_planning_time: float = 5.0,
+        service_timeout_sec: float = 10.0,
     ):
         """Request a pose-constrained MoveIt plan without executing it."""
         if self.node is None or not hasattr(self.node, "create_client"):
@@ -781,8 +818,10 @@ class UR5MoveItPlanBackend:
             request = GetMotionPlan.Request()
             motion_request = request.motion_plan_request
             motion_request.group_name = self.planning_group
-            motion_request.num_planning_attempts = 1
-            motion_request.allowed_planning_time = 5.0
+            if planner_id:
+                motion_request.planner_id = str(planner_id)
+            motion_request.num_planning_attempts = max(1, int(num_planning_attempts))
+            motion_request.allowed_planning_time = max(0.1, float(allowed_planning_time))
             motion_request.max_velocity_scaling_factor = float(velocity_scale)
             motion_request.max_acceleration_scaling_factor = float(acceleration_scale)
             if start_state is not None:
@@ -807,22 +846,27 @@ class UR5MoveItPlanBackend:
             position_constraint.weight = 1.0
             goal.position_constraints.append(position_constraint)
 
-            orientation_constraint = OrientationConstraint()
-            orientation_constraint.header.frame_id = frame
-            orientation_constraint.link_name = self.ee_frame
-            orientation_constraint.orientation.x = float(orientation.get("x", 0.0))
-            orientation_constraint.orientation.y = float(orientation.get("y", 0.0))
-            orientation_constraint.orientation.z = float(orientation.get("z", 0.0))
-            orientation_constraint.orientation.w = float(orientation.get("w", 1.0))
-            orientation_constraint.absolute_x_axis_tolerance = orientation_tolerance
-            orientation_constraint.absolute_y_axis_tolerance = orientation_tolerance
-            orientation_constraint.absolute_z_axis_tolerance = orientation_tolerance
-            orientation_constraint.weight = 1.0
-            goal.orientation_constraints.append(orientation_constraint)
+            if use_orientation_constraint:
+                orientation_constraint = OrientationConstraint()
+                orientation_constraint.header.frame_id = frame
+                orientation_constraint.link_name = self.ee_frame
+                orientation_constraint.orientation.x = float(orientation.get("x", 0.0))
+                orientation_constraint.orientation.y = float(orientation.get("y", 0.0))
+                orientation_constraint.orientation.z = float(orientation.get("z", 0.0))
+                orientation_constraint.orientation.w = float(orientation.get("w", 1.0))
+                orientation_constraint.absolute_x_axis_tolerance = orientation_tolerance
+                orientation_constraint.absolute_y_axis_tolerance = orientation_tolerance
+                orientation_constraint.absolute_z_axis_tolerance = orientation_tolerance
+                orientation_constraint.weight = 1.0
+                goal.orientation_constraints.append(orientation_constraint)
             motion_request.goal_constraints.append(goal)
 
             future = client.call_async(request)
-            rclpy.spin_until_future_complete(self.node, future, timeout_sec=10.0)
+            rclpy.spin_until_future_complete(
+                self.node,
+                future,
+                timeout_sec=max(0.1, float(service_timeout_sec)),
+            )
             if not future.done() or future.result() is None:
                 self._pymoveit2_error = "MoveIt pose planning service returned no response."
                 return None
@@ -985,7 +1029,16 @@ class UR5MoveItPlanBackend:
         joint_trajectory = getattr(trajectory, "joint_trajectory", None)
         points = list(getattr(joint_trajectory, "points", []) or [])
         joint_names = list(getattr(joint_trajectory, "joint_names", []) or [])
-        success = bool(plan_result) and trajectory is not None
+        diagnostics = self._moveit_plan_diagnostics(plan_result, points)
+        success = (
+            bool(plan_result)
+            and trajectory is not None
+            and len(points) > 0
+            and diagnostics.get("error_code_name") in (None, "SUCCESS")
+        )
+        message = self._moveit_plan_message(success, trajectory, points, diagnostics)
+        preview = self._trajectory_preview(points)
+        preview["moveit_diagnostics"] = diagnostics
 
         return MotionPlanSummary(
             plan_id=plan_id,
@@ -994,14 +1047,53 @@ class UR5MoveItPlanBackend:
             target_pose=target_pose,
             planning_group=self.planning_group,
             success=success,
-            message="MoveIt plan generated." if success else "MoveIt did not return a valid plan.",
+            message=message,
             num_trajectory_points=len(points),
             duration_sec=self._duration_from_points(points),
             joint_names=joint_names,
             max_joint_delta_rad=self._max_joint_delta(points),
             max_velocity_abs=self._max_velocity_abs(points),
-            trajectory_preview=self._trajectory_preview(points),
+            trajectory_preview=preview,
         )
+
+    @classmethod
+    def _moveit_plan_diagnostics(cls, plan_result, points) -> Dict[str, Any]:
+        error_code = getattr(plan_result, "error_code", None)
+        value = getattr(error_code, "val", None)
+        if value is None:
+            value = getattr(error_code, "value", None)
+        try:
+            value = int(value) if value is not None else None
+        except (TypeError, ValueError):
+            value = None
+        return {
+            "error_code_value": value,
+            "error_code_name": cls._moveit_error_code_name(value),
+            "trajectory_present": getattr(plan_result, "trajectory", None) is not None,
+            "joint_trajectory_points": len(points),
+        }
+
+    @staticmethod
+    def _moveit_error_code_name(value: int | None) -> str | None:
+        if value is None:
+            return None
+        return MOVEIT_ERROR_CODE_NAMES.get(value, f"UNKNOWN_{value}")
+
+    @staticmethod
+    def _moveit_plan_message(success: bool, trajectory, points, diagnostics: Dict[str, Any]) -> str:
+        if success:
+            return "MoveIt plan generated with a non-empty joint trajectory."
+        if trajectory is None:
+            return "MoveIt did not return a trajectory."
+        if diagnostics.get("error_code_name") not in (None, "SUCCESS"):
+            return (
+                "MoveIt pose planning failed: "
+                f"{diagnostics.get('error_code_name')} "
+                f"({diagnostics.get('error_code_value')})."
+            )
+        if len(points) <= 0:
+            return "MoveIt returned an empty joint trajectory."
+        return "MoveIt did not return a valid plan."
 
     @staticmethod
     def _extract_robot_trajectory(plan_result):

@@ -74,6 +74,7 @@ class ObjectPointCloudBuilder:
             x = (cols - cx) * z / fx
             y = (rows - cy) * z / fy
             points = np.column_stack((x, y, z))
+            centroid = points.mean(axis=0)
 
             output_dir = Path(str(self.config["output_dir"]))
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -89,6 +90,11 @@ class ObjectPointCloudBuilder:
             "point_cloud_path": str(output_path),
             "num_points": int(points.shape[0]),
             "frame": frame or self._frame_id(camera_info),
+            "centroid_m": {
+                "x": float(centroid[0]),
+                "y": float(centroid[1]),
+                "z": float(centroid[2]),
+            },
         }
 
     @staticmethod
@@ -104,7 +110,7 @@ class ObjectPointCloudBuilder:
     @staticmethod
     def _intrinsics(camera_info: Any) -> tuple[float, float, float, float]:
         values = camera_info.get("k") if isinstance(camera_info, dict) else getattr(camera_info, "k", None)
-        if not values or len(values) < 6:
+        if values is None or len(values) < 6:
             raise ValueError("CameraInfo intrinsic matrix K is unavailable.")
         fx, fy = float(values[0]), float(values[4])
         if fx <= 0 or fy <= 0:
@@ -144,4 +150,5 @@ class ObjectPointCloudBuilder:
             "point_cloud_path": None,
             "num_points": 0,
             "frame": None,
+            "centroid_m": None,
         }

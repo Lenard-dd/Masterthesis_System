@@ -346,13 +346,25 @@ ros2 run llm_skill_robot ros-real-gripper-test
 
 The test prints every active width, speed, and force limit before accepting input. It shows a command preview and requires the exact, case-sensitive response `YES` before every real command. Safe close uses `safe_close_width_m` (`0.04 m` by default), never an implicit fully closed `0.0 m`. The CLI contains no UR5 arm backend or arm command path.
 
-To test only the width recommended by a GraspGenX candidate, configure the GraspGenX JSON runner in `config/grasping.yaml`, then run:
+GraspGenX is connected through a subprocess JSON runner configured in `config/grasping.yaml`. The default runner is `scripts/graspgenx_zmq_runner.py`; it connects to a GraspGenX ZMQ server at `localhost:5556` and asks for `robotiq_2f_140` candidates. Start the GraspGenX server before running the ROS demos, for example from the GraspGenX repository and its `graspgenx` conda environment:
+
+```bash
+conda activate graspgenx
+cd ~/GraspGenX/GraspGenX
+python client-server/graspgenx_server.py \
+  --config ~/GraspGenX/GraspGenX/ext/graspgenx_checkpoints/release \
+  --assets_dir ~/GraspGenX/GraspGenX/assets \
+  --default_gripper robotiq_2f_140 \
+  --port 5556
+```
+
+Then, to test only the width recommended by a GraspGenX candidate, run:
 
 ```bash
 ros2 run llm_skill_robot ros-graspgenx-gripper-width-test
 ```
 
-This flow detects an object with the real D435i and SAM3, builds its masked point cloud, selects the highest-scoring valid GraspGenX candidate, and reviews its `gripper_width_m`. It does not move to the candidate pose, execute MoveIt, or command any UR5 arm joint. The only possible hardware action is setting the real gripper width after the value passes `hardware_mode.yaml` limits and the operator types the exact response `YES`. Missing point clouds, candidates, or candidate widths stop the flow without a command.
+This flow detects an object with the real D435i and SAM3, builds its masked point cloud, selects the highest-scoring valid GraspGenX candidate, and reviews its `gripper_width_m`. The ZMQ GraspGenX API returns poses and scores; by default `scripts/graspgenx_zmq_runner.py` estimates `gripper_width_m` from the object point-cloud extent along the candidate gripper opening axis and marks the source as `point_cloud_projection_estimate` in candidate metadata. This is a geometric estimate, so the operator must review it and the value must still pass `hardware_mode.yaml` limits. It does not move to the candidate pose, execute MoveIt, or command any UR5 arm joint. The only possible hardware action is setting the real gripper width after the value passes safety limits and the operator types the exact response `YES`. Missing point clouds, candidates, or candidate widths stop the flow without a command.
 
 For a MoveIt plan-only preview of the selected GraspGenX pose, run:
 
@@ -361,6 +373,18 @@ ros2 run llm_skill_robot ros-graspgenx-plan-only-demo
 ```
 
 This demo derives pregrasp, grasp, and retreat poses, requests plan-only MoveIt trajectories, validates them, and publishes the resulting sequence to RViz for human review. It never calls MoveIt execution, never sends a trajectory to the UR5 controller, and never commands the real gripper. `hardware_mode.yaml` must keep real-arm execution disabled; even a positive confirmation cannot enable real-arm motion in this flow.
+
+If the RViz preview looks twisted, overly complex, or ends at an unexpected gripper pose, check the frame convention before tuning MoveIt. GraspGenX reports a grasp frame, while MoveIt plans the UR5 end-effector frame from `config/ur5.yaml` (`tool0` by default). Configure the measured offset in `config/grasping.yaml`:
+
+```yaml
+plan_only_preview:
+  grasp_frame_to_ee_frame:
+    enabled: true
+    translation_m: [0.0, 0.0, 0.0]
+    rotation_rpy_rad: [0.0, 0.0, 0.0]
+```
+
+The convention is `T_base_ee = T_base_grasp * T_grasp_ee`. `translation_m` is expressed in the GraspGenX grasp frame, and `rotation_rpy_rad` is the roll/pitch/yaw from that grasp frame to MoveIt's `tool0` frame. Leave it disabled until you have measured/calibrated the Robotiq/tool0 offset.
 
 ## Unified hardware-safe perception and gripper demo
 

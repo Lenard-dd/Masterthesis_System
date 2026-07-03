@@ -7,15 +7,27 @@ from pathlib import Path
 import subprocess
 from typing import Any
 
+from llm_skill_robot.utils import resolve_project_path
+
 
 class GraspGenXSubprocessAdapter:
     DEFAULT_CONFIG = {
         "enabled": True,
         "conda_env": "graspgenx",
         "conda_executable": "conda",
-        "runner_script": "",
+        "runner_script": "scripts/graspgenx_zmq_runner.py",
         "timeout_sec": 120.0,
         "output_dir": "data/grasping/graspgenx_outputs",
+        "server_host": "localhost",
+        "server_port": 5556,
+        "gripper_name": "robotiq_2f_140",
+        "num_grasps": 200,
+        "grasp_threshold": -1.0,
+        "topk_num_grasps": 100,
+        "timeout_ms": 60000,
+        "estimate_gripper_width": True,
+        "width_axis_index": 1,
+        "width_clearance_m": 0.01,
     }
 
     def __init__(self, config: dict | None = None):
@@ -35,12 +47,7 @@ class GraspGenXSubprocessAdapter:
         if not Path(point_cloud_path).is_file():
             return self._result("FAILED", f"Point cloud does not exist: {point_cloud_path}")
 
-        command = [
-            str(self.config["conda_executable"]), "run", "-n",
-            str(self.config["conda_env"]), "python", str(runner),
-            "--point-cloud", point_cloud_path,
-            "--output-dir", str(self.config["output_dir"]),
-        ]
+        command = self._build_command(point_cloud_path, runner)
         try:
             completed = subprocess.run(
                 command,
@@ -58,19 +65,50 @@ class GraspGenXSubprocessAdapter:
                 f"GraspGenX subprocess exited with code {completed.returncode}: {(completed.stderr or '').strip()}",
             )
         try:
-            value = json.loads(completed.stdout)
+            value = self._parse_runner_json(completed.stdout)
         except json.JSONDecodeError:
-            return self._result("FAILED", "GraspGenX runner did not return valid JSON.")
+            detail = self._truncate((completed.stdout or "").strip())
+            stderr = self._truncate((completed.stderr or "").strip())
+            suffix = f" stdout={detail!r} stderr={stderr!r}" if detail or stderr else ""
+            return self._result("FAILED", f"GraspGenX runner did not return valid JSON.{suffix}")
         return self._normalize(value)
+
+    def _build_command(self, point_cloud_path: str, runner: Path | None = None) -> list[str]:
+        runner = runner or self._runner_path()
+        command = [
+            str(self.config["conda_executable"]), "run", "-n",
+            str(self.config["conda_env"]), "python", str(runner),
+            "--point-cloud", point_cloud_path,
+            "--output-dir", str(self.config["output_dir"]),
+            "--host", str(self.config["server_host"]),
+            "--port", str(int(self.config["server_port"])),
+            "--gripper-name", str(self.config["gripper_name"]),
+            "--num-grasps", str(int(self.config["num_grasps"])),
+            "--grasp-threshold", str(float(self.config["grasp_threshold"])),
+            "--topk-num-grasps", str(int(self.config["topk_num_grasps"])),
+            "--timeout-ms", str(int(self.config["timeout_ms"])),
+            "--width-axis-index", str(int(self.config["width_axis_index"])),
+            "--width-clearance-m", str(float(self.config["width_clearance_m"])),
+        ]
+        if bool(self.config.get("estimate_gripper_width", True)):
+            command.append("--estimate-gripper-width")
+        else:
+            command.append("--no-estimate-gripper-width")
+        default_width = self.config.get("default_gripper_width_m")
+        if default_width is not None:
+            command.extend(["--default-gripper-width-m", str(float(default_width))])
+        return command
 
     def _runner_path(self) -> Path | None:
         configured = str(self.config.get("runner_script") or "").strip()
         if not configured:
             return None
         path = Path(configured).expanduser()
-        if path.is_absolute() or path.exists():
+        if path.is_absolute():
             return path
-        return Path(__file__).resolve().parents[2] / path
+        if path.exists():
+            return path
+        return resolve_project_path(path)
 
     @classmethod
     def _normalize(cls, value: Any) -> dict:
@@ -86,6 +124,23 @@ class GraspGenXSubprocessAdapter:
             "message": str(value.get("message", "")),
             "candidates": candidates,
         }
+
+    @staticmethod
+    def _parse_runner_json(stdout: str) -> Any:
+        try:
+            return json.loads(stdout)
+        except json.JSONDecodeError as original_exc:
+            for line in reversed((stdout or "").splitlines()):
+                stripped = line.strip()
+                if stripped.startswith("{") and stripped.endswith("}"):
+                    return json.loads(stripped)
+            raise original_exc
+
+    @staticmethod
+    def _truncate(value: str, limit: int = 1000) -> str:
+        if len(value) <= limit:
+            return value
+        return f"{value[:limit]}... <truncated {len(value) - limit} chars>"
 
     @staticmethod
     def _result(status: str, message: str) -> dict:

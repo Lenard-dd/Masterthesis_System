@@ -18,7 +18,7 @@ class Pymoveit2NoPlanApiBackend(UR5MoveItPlanBackend):
 
 class FakeJointTrajectory:
     joint_names = ["joint_1"]
-    points = []
+    points = [type("FakePoint", (), {"positions": [0.1], "velocities": [0.0]})()]
 
 
 class FakeRobotTrajectory:
@@ -28,6 +28,27 @@ class FakeRobotTrajectory:
 class FakePosePlanResponse:
     trajectory = FakeRobotTrajectory()
     trajectory_start = object()
+    error_code = type("FakeErrorCode", (), {"val": 1})()
+
+
+class EmptyJointTrajectory:
+    joint_names = ["joint_1"]
+    points = []
+
+
+class EmptyRobotTrajectory:
+    joint_trajectory = EmptyJointTrajectory()
+
+
+class EmptyPosePlanResponse:
+    trajectory = EmptyRobotTrajectory()
+    trajectory_start = object()
+    error_code = type("FakeErrorCode", (), {"val": 1})()
+
+
+class EmptyPosePlanServiceBackend(UR5MoveItPlanBackend):
+    def _request_moveit_pose_plan_service(self, **kwargs):
+        return EmptyPosePlanResponse()
 
 
 class PosePlanServiceBackend(UR5MoveItPlanBackend):
@@ -46,7 +67,7 @@ def test_plan_to_named_target_returns_success_in_dry_run_mode():
     assert result["plan_id"].startswith("plan_")
     assert result["summary"]["target_type"] == "named_target"
     assert result["summary"]["target_name"] == "home"
-    assert result["summary"]["planning_group"] == "ur_manipulator"
+    assert result["summary"]["planning_group"] == "ur5_manipulator"
 
 
 def test_plan_id_is_cached():
@@ -110,9 +131,73 @@ def test_pose_plan_only_service_result_is_cached_without_execution():
 
     assert result["success"] is True
     assert result["summary"]["target_type"] == "pose"
+    assert result["summary"]["num_trajectory_points"] == 1
+    assert result["summary"]["trajectory_preview"]["moveit_diagnostics"] == {
+        "error_code_value": 1,
+        "error_code_name": "SUCCESS",
+        "trajectory_present": True,
+        "joint_trajectory_points": 1,
+    }
     cached = backend.get_plan(result["plan_id"])
     assert cached.robot_trajectory is FakePosePlanResponse.trajectory
     assert backend.pose_request["frame"] == "base_link"
+    assert backend.pose_request["use_orientation_constraint"] is True
+
+
+def test_pose_plan_can_disable_orientation_constraint_for_diagnostics():
+    backend = PosePlanServiceBackend(dry_run=False, node=object(), execution_mode="plan_only")
+
+    result = backend.plan_to_pose(
+        frame="base_link",
+        position={"x": 0.4, "y": 0.0, "z": 0.3},
+        orientation={"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+        use_orientation_constraint=False,
+    )
+
+    assert result["success"] is True
+    assert backend.pose_request["use_orientation_constraint"] is False
+
+
+def test_pose_plan_forwards_moveit_request_tuning_options():
+    backend = PosePlanServiceBackend(dry_run=False, node=object(), execution_mode="plan_only")
+
+    result = backend.plan_to_pose(
+        frame="base_link",
+        position={"x": 0.4, "y": 0.0, "z": 0.3},
+        orientation={"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+        planner_id="RRTConnectkConfigDefault",
+        num_planning_attempts=8,
+        allowed_planning_time=7.5,
+        service_timeout_sec=12.0,
+    )
+
+    assert result["success"] is True
+    assert backend.pose_request["planner_id"] == "RRTConnectkConfigDefault"
+    assert backend.pose_request["num_planning_attempts"] == 8
+    assert backend.pose_request["allowed_planning_time"] == 7.5
+    assert backend.pose_request["service_timeout_sec"] == 12.0
+
+
+def test_pose_plan_service_empty_trajectory_is_clear_failure():
+    backend = EmptyPosePlanServiceBackend(
+        dry_run=False, node=object(), execution_mode="plan_only"
+    )
+
+    result = backend.plan_to_pose(
+        frame="base_link",
+        position={"x": 0.4, "y": 0.0, "z": 0.3},
+        orientation={"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+    )
+
+    assert result["success"] is False
+    assert result["message"] == "MoveIt returned an empty joint trajectory."
+    assert result["summary"]["num_trajectory_points"] == 0
+    assert result["summary"]["trajectory_preview"]["moveit_diagnostics"] == {
+        "error_code_value": 1,
+        "error_code_name": "SUCCESS",
+        "trajectory_present": True,
+        "joint_trajectory_points": 0,
+    }
 
 
 def test_pymoveit2_unavailable_returns_clear_failure():

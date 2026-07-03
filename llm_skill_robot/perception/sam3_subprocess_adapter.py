@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
+
+from llm_skill_robot.utils import resolve_project_path
 
 
 class SAM3SubprocessAdapter:
@@ -21,6 +24,7 @@ class SAM3SubprocessAdapter:
         "device": "auto",
         "checkpoint_path": "",
         "model_config": "",
+        "pytorch_cuda_alloc_conf": "",
     }
 
     def __init__(self, config: dict | None = None):
@@ -74,12 +78,14 @@ class SAM3SubprocessAdapter:
             )
 
         command = self._build_command(rgb_image_path, query, min_confidence)
+        env = self._build_environment()
         try:
             completed = subprocess.run(
                 command,
                 capture_output=True,
                 text=True,
                 timeout=float(self.config["timeout_sec"]),
+                env=env,
             )
         except subprocess.TimeoutExpired:
             return self._result(
@@ -148,18 +154,25 @@ class SAM3SubprocessAdapter:
 
         return command
 
+    def _build_environment(self) -> dict[str, str] | None:
+        alloc_conf = str(self.config.get("pytorch_cuda_alloc_conf") or "").strip()
+        device = str(self.config.get("device") or "").strip().lower()
+        force_cpu = device == "cpu"
+        if not alloc_conf and not force_cpu:
+            return None
+        env = os.environ.copy()
+        if alloc_conf:
+            env.setdefault("PYTORCH_CUDA_ALLOC_CONF", alloc_conf)
+        if force_cpu:
+            # Some SAM3/PyTorch paths still auto-place image tensors on CUDA when
+            # CUDA is visible. Hide GPUs for the subprocess so CPU mode is truly
+            # all-CPU and cannot mix cuda inputs with cpu model weights.
+            env["CUDA_VISIBLE_DEVICES"] = ""
+        return env
+
     @staticmethod
     def _resolve_runner_script(runner_script: str) -> Path:
-        path = Path(runner_script).expanduser()
-        if path.is_absolute() or path.exists():
-            return path
-
-        repo_root = Path(__file__).resolve().parents[2]
-        repo_relative = repo_root / path
-        if repo_relative.exists():
-            return repo_relative
-
-        return path
+        return resolve_project_path(runner_script)
 
     @staticmethod
     def _result(status: str, message: str, detections: list[dict] | None = None) -> dict:

@@ -74,6 +74,23 @@ def test_default_relative_runner_resolves_from_repo_root(monkeypatch, tmp_path):
     assert runner_script.exists()
 
 
+def test_cpu_device_hides_cuda_from_subprocess(tmp_path):
+    runner = _make_runner(tmp_path)
+    adapter = SAM3SubprocessAdapter(
+        {
+            "runner_script": str(runner),
+            "device": "cpu",
+            "pytorch_cuda_alloc_conf": "expandable_segments:True",
+        }
+    )
+
+    env = adapter._build_environment()
+
+    assert env is not None
+    assert env["CUDA_VISIBLE_DEVICES"] == ""
+    assert env["PYTORCH_CUDA_ALLOC_CONF"] == "expandable_segments:True"
+
+
 @patch("llm_skill_robot.perception.sam3_subprocess_adapter.subprocess.run")
 def test_detect_success_parses_json(mock_run, tmp_path):
     runner = _make_runner(tmp_path)
