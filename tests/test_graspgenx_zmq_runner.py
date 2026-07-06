@@ -40,6 +40,26 @@ def test_load_ascii_ply_xyz_centers_points(tmp_path):
     assert points[:, 0].tolist() == [-1.0, 1.0]
 
 
+def test_load_point_cloud_with_metadata_records_centering(tmp_path):
+    runner = _load_runner_module()
+    xyz = tmp_path / "object.xyz"
+    xyz.write_text("1.0 2.0 3.0\n3.0 4.0 5.0\n", encoding="utf-8")
+
+    points, metadata = runner.load_point_cloud_with_metadata(str(xyz))
+
+    assert points.tolist() == [[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]]
+    assert metadata["centered_for_graspgenx"] is True
+    assert metadata["centering_method"] == "subtract_finite_xyz_mean"
+    assert metadata["raw_point_count"] == 2
+    assert metadata["finite_point_count"] == 2
+    assert metadata["original_centroid_m"] == pytest.approx(
+        {"x": 2.0, "y": 3.0, "z": 4.0}
+    )
+    assert metadata["centered_centroid_m"] == pytest.approx(
+        {"x": 0.0, "y": 0.0, "z": 0.0}
+    )
+
+
 def test_make_candidates_converts_grasps_and_scores():
     runner = _load_runner_module()
     grasps = np.array(

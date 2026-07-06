@@ -30,17 +30,28 @@ grasping:
   plan_only_preview:
     pregrasp_distance_m: 0.10
     retreat_distance_m: 0.10
+    # Interpret retreat_vector after TF and tool0 conversion, in the final
+    # MoveIt target frame. With target_frame=base_link, [0, 0, 1] means lift up
+    # from the grasp pose instead of moving along the camera optical +Z axis.
+    retreat_vector_frame: target_frame
     retreat_vector: [0.0, 0.0, 1.0]
+    sequence_replanning_attempts: 1
     velocity_scale: 0.05
     acceleration_scale: 0.05
     moveit:
-      # Explicitly request a fast bidirectional planner instead of relying on
-      # the MoveIt default. You can try other planner IDs from your MoveIt OMPL
-      # config if RRTConnect still gives a long joint-space route.
-      planner_id: RRTConnectkConfigDefault
-      num_planning_attempts: 8
-      allowed_planning_time_sec: 8.0
-      service_timeout_sec: 15.0
+      # Use Pilz for deterministic industrial-style grasp motion:
+      #   PTP: joint-space move to pregrasp
+      #   LIN: Cartesian straight-line approach and retreat
+      # This avoids random OMPL wrist-wrap solutions for short grasp motions.
+      pipeline_id: pilz_industrial_motion_planner
+      planner_id: PTP
+      stage_planner_ids:
+        pregrasp: PTP
+        grasp: LIN
+        retreat: LIN
+      num_planning_attempts: 1
+      allowed_planning_time_sec: 3.0
+      service_timeout_sec: 8.0
     # GraspGenX score alone does not guarantee that the UR5 can reach the
     # candidate from its current joint state. Before previewing the full
     # pregrasp/grasp/retreat sequence, test the top candidates with MoveIt
@@ -76,4 +87,4 @@ grasping:
     grasp_frame_to_ee_frame:
       enabled: true
       translation_m: [0.0, 0.0, -0.004]
-      rotation_rpy_rad: [0.0, 0.0, 0.0]
+      rotation_rpy_rad: [0.0, 0.0, -1.57079632679]

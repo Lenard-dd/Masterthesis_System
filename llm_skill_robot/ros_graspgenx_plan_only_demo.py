@@ -286,10 +286,21 @@ def prepare_candidate_preview(
                 "is unavailable."
             )
         poses = transformed_poses
-    return apply_grasp_frame_to_ee_transform(
+    poses = apply_grasp_frame_to_ee_transform(
         poses,
         preview_config.get("grasp_frame_to_ee_frame", {}),
     )
+    if str(preview_config.get("retreat_vector_frame", "pose_frame")).lower() in {
+        "target_frame",
+        "base_link",
+    }:
+        retreat_vector = _normalized_vector(
+            preview_config.get("retreat_vector", [0.0, 0.0, 1.0])
+        )
+        retreat_distance = float(preview_config.get("retreat_distance_m", 0.10))
+        poses = dict(poses)
+        poses["retreat"] = _offset_pose(poses["grasp"], retreat_vector, retreat_distance)
+    return poses
 
 
 def planning_variant_kwargs(
@@ -326,6 +337,9 @@ def moveit_planning_kwargs(preview_config: dict | None = None) -> dict:
     preview_config = preview_config or {}
     moveit_config = preview_config.get("moveit", {}) or {}
     kwargs = {}
+    pipeline_id = moveit_config.get("pipeline_id")
+    if pipeline_id:
+        kwargs["pipeline_id"] = str(pipeline_id)
     planner_id = moveit_config.get("planner_id")
     if planner_id:
         kwargs["planner_id"] = str(planner_id)
@@ -337,6 +351,39 @@ def moveit_planning_kwargs(preview_config: dict | None = None) -> dict:
         )
     if "service_timeout_sec" in moveit_config:
         kwargs["service_timeout_sec"] = float(moveit_config["service_timeout_sec"])
+    return kwargs
+
+
+def moveit_stage_planning_kwargs(
+    preview_config: dict | None,
+    stage: str,
+    base_kwargs: dict | None = None,
+) -> dict:
+    """Return per-stage MoveIt tuning, e.g. Pilz PTP for pregrasp and LIN after."""
+    preview_config = preview_config or {}
+    moveit_config = preview_config.get("moveit", {}) or {}
+    kwargs = dict(base_kwargs or moveit_planning_kwargs(preview_config))
+    stage_planner_ids = moveit_config.get("stage_planner_ids", {}) or {}
+    if stage in stage_planner_ids:
+        kwargs["planner_id"] = str(stage_planner_ids[stage])
+    stage_pipeline_ids = moveit_config.get("stage_pipeline_ids", {}) or {}
+    if stage in stage_pipeline_ids:
+        kwargs["pipeline_id"] = str(stage_pipeline_ids[stage])
+    stage_overrides = moveit_config.get("stage_overrides", {}) or {}
+    if stage in stage_overrides:
+        override = stage_overrides[stage] or {}
+        if "planner_id" in override:
+            kwargs["planner_id"] = str(override["planner_id"])
+        if "pipeline_id" in override:
+            kwargs["pipeline_id"] = str(override["pipeline_id"])
+        if "num_planning_attempts" in override:
+            kwargs["num_planning_attempts"] = int(override["num_planning_attempts"])
+        if "allowed_planning_time_sec" in override:
+            kwargs["allowed_planning_time"] = float(
+                override["allowed_planning_time_sec"]
+            )
+        if "service_timeout_sec" in override:
+            kwargs["service_timeout_sec"] = float(override["service_timeout_sec"])
     return kwargs
 
 
@@ -418,18 +465,33 @@ def screen_grasp_candidates_for_plan_only(
                 **base_plan_kwargs,
                 **planning_variant_kwargs(variant, screening_config),
             }
-            result = backend.plan_to_pose(
-                frame=poses["pregrasp"]["frame"],
-                position=poses["pregrasp"]["position"],
-                orientation=poses["pregrasp"]["orientation"],
+            stage_kwargs = {
+                stage: moveit_stage_planning_kwargs(preview_config, stage, kwargs)
+                for stage in ("pregrasp", "grasp", "retreat")
+            }
+            sequence = plan_pose_sequence(
+                backend,
+                poses,
+                trajectory_validator,
                 velocity_scale=velocity_scale,
                 acceleration_scale=acceleration_scale,
-                skill_id=f"screen_pregrasp_{variant}",
-                step_id=2000 + len(attempts) + 1,
-                **kwargs,
+                plan_kwargs=kwargs,
+                stage_plan_kwargs=stage_kwargs,
+                max_replanning_attempts=int(
+                    screening_config.get("sequence_replanning_attempts", 1)
+                ),
             )
-            summary = result.get("summary", {})
-            validation = trajectory_validator.validate_motion_plan_summary(summary)
+            summaries = [
+                stage["plan"].get("summary", {})
+                for stage in sequence.get("stages", [])
+            ]
+            summary = _sequence_screening_summary(summaries)
+            validation = (
+                {"decision": "ALLOW", "reasons": [], "warnings": []}
+                if sequence.get("success")
+                else _failed_sequence_validation(sequence)
+            )
+            failed_stage = _failed_sequence_stage(sequence)
             attempt = {
                 "candidate": candidate,
                 "candidate_id": candidate_id,
@@ -437,11 +499,18 @@ def screen_grasp_candidates_for_plan_only(
                 "poses": poses,
                 "variant": variant,
                 "plan_kwargs": kwargs,
-                "plan": result,
+                "sequence": sequence,
+                "plan": sequence["stages"][-1]["plan"] if sequence.get("stages") else {},
+                "summary": summary,
                 "validation": validation,
-                "accepted": bool(result.get("success"))
+                "accepted": bool(sequence.get("success"))
                 and validation.get("decision") == "ALLOW",
-                "message": result.get("message"),
+                "message": (
+                    "full sequence reachable"
+                    if sequence.get("success")
+                    else f"failed at {failed_stage}"
+                ),
+                "failed_stage": failed_stage,
                 "points": int(summary.get("num_trajectory_points") or 0),
                 "max_joint_delta_rad": summary.get("max_joint_delta_rad"),
             }
@@ -475,6 +544,54 @@ def screen_grasp_candidates_for_plan_only(
     }
 
 
+def _sequence_screening_summary(summaries: list[dict]) -> dict:
+    if not summaries:
+        return {
+            "success": False,
+            "num_trajectory_points": 0,
+            "max_joint_delta_rad": None,
+            "trajectory_preview": {},
+        }
+    max_delta_values = [
+        summary.get("max_joint_delta_rad")
+        for summary in summaries
+        if summary.get("max_joint_delta_rad") is not None
+    ]
+    return {
+        "success": all(summary.get("success", False) for summary in summaries),
+        "num_trajectory_points": sum(
+            int(summary.get("num_trajectory_points") or 0)
+            for summary in summaries
+        ),
+        "max_joint_delta_rad": max(max_delta_values) if max_delta_values else None,
+        "trajectory_preview": {},
+    }
+
+
+def _failed_sequence_stage(sequence: dict) -> str:
+    for stage in sequence.get("stages", []):
+        if (
+            not stage["plan"].get("success", False)
+            or stage["validation"].get("decision") != "ALLOW"
+        ):
+            return str(stage.get("stage"))
+    return "sequence"
+
+
+def _failed_sequence_validation(sequence: dict) -> dict:
+    failed_stage = _failed_sequence_stage(sequence)
+    reasons = [f"Sequence planning failed at {failed_stage}."]
+    for stage in sequence.get("stages", []):
+        if str(stage.get("stage")) != failed_stage:
+            continue
+        plan = stage.get("plan", {})
+        if plan.get("message"):
+            reasons.append(str(plan.get("message")))
+        reasons.extend(stage.get("validation", {}).get("reasons") or [])
+        break
+    return {"decision": "BLOCK", "reasons": reasons, "warnings": []}
+
+
 def plan_pose_sequence(
     backend,
     poses: dict[str, dict],
@@ -482,30 +599,65 @@ def plan_pose_sequence(
     velocity_scale: float = 0.05,
     acceleration_scale: float = 0.05,
     plan_kwargs: dict | None = None,
+    stage_plan_kwargs: dict[str, dict] | None = None,
+    max_replanning_attempts: int = 1,
 ) -> dict:
     """Plan and validate three segments; this function has no execution call."""
     results = []
     start_state = None
     plan_kwargs = plan_kwargs or {}
+    stage_plan_kwargs = stage_plan_kwargs or {}
+    attempts_per_stage = max(1, int(max_replanning_attempts))
     for step_id, label in enumerate(("pregrasp", "grasp", "retreat"), start=1):
         pose = poses[label]
-        result = backend.plan_to_pose(
-            frame=pose["frame"],
-            position=pose["position"],
-            orientation=pose["orientation"],
-            velocity_scale=velocity_scale,
-            acceleration_scale=acceleration_scale,
-            skill_id=f"plan_{label}_pose",
-            step_id=step_id,
-            start_state=start_state,
+        current_plan_kwargs = {
             **plan_kwargs,
-        )
-        validation = trajectory_validator.validate_motion_plan_summary(result["summary"])
-        results.append({"stage": label, "plan": result, "validation": validation})
-        if not result.get("success", False) or validation.get("decision") != "ALLOW":
+            **(stage_plan_kwargs.get(label) or {}),
+        }
+        attempts = []
+        for attempt_index in range(1, attempts_per_stage + 1):
+            result = backend.plan_to_pose(
+                frame=pose["frame"],
+                position=pose["position"],
+                orientation=pose["orientation"],
+                velocity_scale=velocity_scale,
+                acceleration_scale=acceleration_scale,
+                skill_id=f"plan_{label}_pose",
+                step_id=step_id * 100 + attempt_index,
+                start_state=start_state,
+                **current_plan_kwargs,
+            )
+            validation = trajectory_validator.validate_motion_plan_summary(
+                result["summary"]
+            )
+            attempts.append(
+                {
+                    "stage": label,
+                    "plan": result,
+                    "validation": validation,
+                    "attempt_index": attempt_index,
+                }
+            )
+        accepted = [
+            attempt
+            for attempt in attempts
+            if attempt["plan"].get("success", False)
+            and attempt["validation"].get("decision") == "ALLOW"
+        ]
+        selected_stage = sorted(accepted or attempts, key=_plan_attempt_ranking_key)[0]
+        selected_stage["attempts"] = attempts
+        results.append(selected_stage)
+        if (
+            not selected_stage["plan"].get("success", False)
+            or selected_stage["validation"].get("decision") != "ALLOW"
+        ):
             break
         end_state_getter = getattr(backend, "get_plan_end_state", None)
-        start_state = end_state_getter(result["plan_id"]) if callable(end_state_getter) else None
+        start_state = (
+            end_state_getter(selected_stage["plan"]["plan_id"])
+            if callable(end_state_getter)
+            else None
+        )
     return {
         "success": len(results) == 3 and all(
             item["plan"].get("success", False)
@@ -514,6 +666,15 @@ def plan_pose_sequence(
         ),
         "stages": results,
     }
+
+
+def _plan_attempt_ranking_key(attempt: dict) -> tuple:
+    summary = attempt.get("plan", {}).get("summary", {}) or {}
+    max_delta = summary.get("max_joint_delta_rad")
+    return (
+        float(max_delta) if max_delta is not None else float("inf"),
+        int(summary.get("num_trajectory_points") or 999999),
+    )
 
 
 def diagnose_pregrasp_planning(
@@ -589,6 +750,11 @@ def _print_plan_results(sequence: dict) -> None:
         print(f"{stage['stage']} planning success/failure: {'SUCCESS' if plan.get('success') else 'FAILURE'}")
         summary = plan.get("summary", {})
         print(f"{stage['stage']} planning message: {plan.get('message')}")
+        if stage.get("attempts"):
+            print(
+                f"{stage['stage']} selected planning attempt: "
+                f"{stage.get('attempt_index')} / {len(stage.get('attempts', []))}"
+            )
         print(f"{stage['stage']} trajectory points: {summary.get('num_trajectory_points')}")
         diagnostics = (summary.get("trajectory_preview", {}) or {}).get(
             "moveit_diagnostics"
@@ -596,6 +762,9 @@ def _print_plan_results(sequence: dict) -> None:
         if diagnostics:
             print(f"{stage['stage']} MoveIt diagnostics:")
             pprint.pprint(diagnostics, sort_dicts=False)
+        joint_deltas = _format_joint_deltas(summary)
+        if joint_deltas:
+            print(f"{stage['stage']} joint deltas: {joint_deltas}")
         print(f"{stage['stage']} trajectory validation result:")
         pprint.pprint(stage["validation"], sort_dicts=False)
 
@@ -621,6 +790,9 @@ def _print_pregrasp_diagnostics(results: list[dict]) -> None:
                 f"{diagnostics.get('error_code_name')} "
                 f"({diagnostics.get('error_code_value')})"
             )
+        joint_deltas = _format_joint_deltas(summary)
+        if joint_deltas:
+            print(f"  joint deltas: {joint_deltas}")
         if item["validation"].get("reasons"):
             print(f"  validation: {item['validation'].get('reasons')}")
 
@@ -640,6 +812,11 @@ def _print_candidate_screening(screening: dict) -> None:
             details.append(f"points={item.get('points')}")
         if item.get("max_joint_delta_rad") is not None:
             details.append(f"max_joint_delta={item.get('max_joint_delta_rad')}")
+        if item.get("failed_stage"):
+            details.append(f"failed_stage={item.get('failed_stage')}")
+        joint_deltas = _format_joint_deltas(item.get("summary", {}))
+        if joint_deltas:
+            details.append(f"joint_deltas={joint_deltas}")
         if reasons:
             details.append(f"reasons={reasons}")
         print(
@@ -658,6 +835,110 @@ def _print_candidate_screening(screening: dict) -> None:
             f"points={selected.get('points')} "
             f"max_joint_delta={selected.get('max_joint_delta_rad')}"
         )
+
+
+def _format_joint_deltas(summary: dict) -> str:
+    preview = summary.get("trajectory_preview", {}) or {}
+    first = preview.get("first_point_positions") or []
+    last = preview.get("last_point_positions") or []
+    joint_names = summary.get("joint_names") or []
+    if not first or not last:
+        return ""
+    count = min(len(first), len(last), len(joint_names) or len(first))
+    items = []
+    for index in range(count):
+        name = joint_names[index] if index < len(joint_names) else f"joint_{index}"
+        delta = float(last[index]) - float(first[index])
+        items.append(f"{name}={delta:+.3f}")
+    return ", ".join(items)
+
+
+ROBOTIQ_2F140_TCP_OFFSET_M = [0.0, 0.0, 0.195]
+
+
+def _pose_point_with_local_offset(pose: dict, offset_m: list[float]) -> dict:
+    quaternion = _normalize_quaternion_dict(pose["orientation"])
+    rotated = _rotate_vector_by_quaternion(offset_m, quaternion)
+    return {
+        "frame": pose["frame"],
+        "position": {
+            axis: float(pose["position"][axis]) + rotated[index]
+            for index, axis in enumerate(("x", "y", "z"))
+        },
+    }
+
+
+def _vector_between_points(start: dict, end: dict) -> dict:
+    return {
+        axis: float(end["position"][axis]) - float(start["position"][axis])
+        for axis in ("x", "y", "z")
+    }
+
+
+def _print_selected_grasp_debug(
+    selected: Any,
+    point_cloud: dict,
+    preview_config: dict,
+    target_frame: str,
+    transformer: TFPoseTransformer | None,
+    final_poses: dict[str, dict],
+) -> None:
+    """Print frame/offset diagnostics for the selected GraspGenX candidate."""
+    print("\nSelected GraspGenX frame debug:")
+    print("object point cloud:")
+    pprint.pprint(
+        {
+            "frame": point_cloud.get("frame"),
+            "centroid_m": point_cloud.get("centroid_m"),
+            "num_points": point_cloud.get("num_points"),
+            "path": point_cloud.get("point_cloud_path"),
+        },
+        sort_dicts=False,
+    )
+
+    localized = localize_graspgenx_candidate(selected, point_cloud)
+    grasp_base_poses = create_preview_poses(
+        localized,
+        preview_config,
+        fallback_frame=point_cloud.get("frame") or target_frame or "base_link",
+    )
+    if target_frame:
+        transformed = transform_pose_sequence_to_target(
+            grasp_base_poses, transformer, target_frame
+        )
+        if transformed is None:
+            print(
+                "Could not transform selected GraspGenX base poses to "
+                f"{target_frame} for debug."
+            )
+            return
+        grasp_base_poses = transformed
+
+    grasp_base_pose = grasp_base_poses["grasp"]
+    tcp_point = _pose_point_with_local_offset(
+        grasp_base_pose, ROBOTIQ_2F140_TCP_OFFSET_M
+    )
+    print("GraspGenX gripper-base grasp pose before tool0 transform:")
+    pprint.pprint(grasp_base_pose, sort_dicts=False)
+    print("Estimated Robotiq TCP point from GraspGenX base pose:")
+    pprint.pprint(
+        {
+            **tcp_point,
+            "local_offset_m": ROBOTIQ_2F140_TCP_OFFSET_M,
+            "note": "For robotiq_2f_140, GraspGenX base -> TCP/fingertip is about +Z 0.195 m.",
+        },
+        sort_dicts=False,
+    )
+    print("Pregrasp/grasp/retreat before tool0 transform:")
+    pprint.pprint(grasp_base_poses, sort_dicts=False)
+    print("Final MoveIt tool0 poses after grasp_frame_to_ee_frame:")
+    pprint.pprint(final_poses, sort_dicts=False)
+    print("Final grasp tool0 minus estimated TCP point:")
+    pprint.pprint(
+        _vector_between_points(tcp_point, final_poses["grasp"]),
+        sort_dicts=False,
+    )
+    print()
 
 
 def _is_transform_matrix(value: Any) -> bool:
@@ -948,6 +1229,14 @@ def main() -> None:
 
         print(f"selected candidate score: {_candidate_value(selected, 'score')}")
         print(f"selected MoveIt planning variant: {selected_variant}")
+        _print_selected_grasp_debug(
+            selected,
+            point_cloud,
+            preview_config,
+            target_frame,
+            transformer,
+            poses,
+        )
         if selected_variant == "position_only":
             print(
                 "Warning: selected preview uses position-only constraints; "
@@ -982,6 +1271,17 @@ def main() -> None:
             velocity_scale=velocity_scale,
             acceleration_scale=acceleration_scale,
             plan_kwargs=selected_plan_kwargs,
+            stage_plan_kwargs={
+                stage: moveit_stage_planning_kwargs(
+                    preview_config,
+                    stage,
+                    selected_plan_kwargs,
+                )
+                for stage in ("pregrasp", "grasp", "retreat")
+            },
+            max_replanning_attempts=int(
+                preview_config.get("sequence_replanning_attempts", 1)
+            ),
         )
         _print_plan_results(sequence)
         if sequence["success"]:

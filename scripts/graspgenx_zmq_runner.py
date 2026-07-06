@@ -75,7 +75,9 @@ def main() -> int:
     args = parse_args()
     try:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-        point_cloud = load_point_cloud(args.point_cloud)
+        point_cloud, point_cloud_metadata = load_point_cloud_with_metadata(
+            args.point_cloud
+        )
         with redirect_stdout(sys.stderr):
             from graspgenx.serving.zmq_client import GraspGenXClient
 
@@ -125,6 +127,7 @@ def main() -> int:
                     "server": metadata,
                     "num_input_points": int(point_cloud.shape[0]),
                     "gripper_name": args.gripper_name,
+                    "point_cloud_preprocessing": point_cloud_metadata,
                 },
                 "candidates": candidates,
             }
@@ -134,6 +137,11 @@ def main() -> int:
 
 
 def load_point_cloud(path: str) -> np.ndarray:
+    points, _metadata = load_point_cloud_with_metadata(path)
+    return points
+
+
+def load_point_cloud_with_metadata(path: str) -> tuple[np.ndarray, dict]:
     point_cloud_path = Path(path)
     if not point_cloud_path.is_file():
         raise FileNotFoundError(f"Point cloud does not exist: {point_cloud_path}")
@@ -153,11 +161,31 @@ def load_point_cloud(path: str) -> np.ndarray:
     points = points[:, :3]
     if points.shape[0] == 0:
         raise ValueError("Point cloud is empty.")
+    raw_point_count = int(points.shape[0])
     points = points[np.all(np.isfinite(points), axis=1)]
     if points.shape[0] == 0:
         raise ValueError("Point cloud contains no finite XYZ points.")
-    points = points - points.mean(axis=0, keepdims=True)
-    return points
+    centroid = points.mean(axis=0, keepdims=True)
+    points = points - centroid
+    centered_centroid = points.mean(axis=0)
+    metadata = {
+        "source_path": str(point_cloud_path),
+        "raw_point_count": raw_point_count,
+        "finite_point_count": int(points.shape[0]),
+        "centered_for_graspgenx": True,
+        "centering_method": "subtract_finite_xyz_mean",
+        "original_centroid_m": {
+            "x": float(centroid[0, 0]),
+            "y": float(centroid[0, 1]),
+            "z": float(centroid[0, 2]),
+        },
+        "centered_centroid_m": {
+            "x": float(centered_centroid[0]),
+            "y": float(centered_centroid[1]),
+            "z": float(centered_centroid[2]),
+        },
+    }
+    return points, metadata
 
 
 def load_ascii_ply_xyz(path: Path) -> np.ndarray:

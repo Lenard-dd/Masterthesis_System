@@ -165,6 +165,7 @@ def test_pose_plan_forwards_moveit_request_tuning_options():
         frame="base_link",
         position={"x": 0.4, "y": 0.0, "z": 0.3},
         orientation={"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+        pipeline_id="pilz_industrial_motion_planner",
         planner_id="RRTConnectkConfigDefault",
         num_planning_attempts=8,
         allowed_planning_time=7.5,
@@ -172,6 +173,7 @@ def test_pose_plan_forwards_moveit_request_tuning_options():
     )
 
     assert result["success"] is True
+    assert backend.pose_request["pipeline_id"] == "pilz_industrial_motion_planner"
     assert backend.pose_request["planner_id"] == "RRTConnectkConfigDefault"
     assert backend.pose_request["num_planning_attempts"] == 8
     assert backend.pose_request["allowed_planning_time"] == 7.5

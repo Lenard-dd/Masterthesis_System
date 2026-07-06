@@ -12,6 +12,7 @@ from llm_skill_robot.ros_graspgenx_plan_only_demo import (
     diagnose_pregrasp_planning,
     localize_graspgenx_candidate,
     moveit_planning_kwargs,
+    moveit_stage_planning_kwargs,
     plan_pose_sequence,
     planning_variant_kwargs,
     prepare_candidate_preview,
@@ -80,6 +81,28 @@ class FakeReachabilityBackend(FakePlanOnlyBackend):
                 "success": reachable,
                 "num_trajectory_points": 4 if reachable else 0,
                 "max_joint_delta_rad": 0.2 if reachable else None,
+                "trajectory_preview": {},
+            },
+        }
+
+
+class FakeSequenceReachabilityBackend(FakePlanOnlyBackend):
+    def plan_to_pose(self, **kwargs):
+        self.plan_calls.append(kwargs)
+        is_bad_grasp = (
+            kwargs.get("skill_id") == "plan_grasp_pose"
+            and float(kwargs["position"]["y"]) > 0.5
+        )
+        success = not is_bad_grasp
+        plan_id = f"sequence_plan_{len(self.plan_calls)}"
+        return {
+            "success": success,
+            "message": "fake sequence plan" if success else "fake grasp IK failure",
+            "plan_id": plan_id,
+            "summary": {
+                "success": success,
+                "num_trajectory_points": 4 if success else 0,
+                "max_joint_delta_rad": 0.2 if success else None,
                 "trajectory_preview": {},
             },
         }
@@ -154,6 +177,29 @@ def test_plan_pose_sequence_forwards_selected_planning_variant_kwargs():
     assert backend.plan_calls[0]["position_tolerance"] == 0.02
 
 
+def test_plan_pose_sequence_applies_stage_planner_kwargs():
+    backend = FakePlanOnlyBackend()
+    poses = create_preview_poses(FAKE_CANDIDATE)
+
+    result = plan_pose_sequence(
+        backend,
+        poses,
+        AllowValidator(),
+        plan_kwargs={"pipeline_id": "pilz_industrial_motion_planner"},
+        stage_plan_kwargs={
+            "pregrasp": {"planner_id": "PTP"},
+            "grasp": {"planner_id": "LIN"},
+            "retreat": {"planner_id": "LIN"},
+        },
+    )
+
+    assert result["success"] is True
+    assert backend.plan_calls[0]["pipeline_id"] == "pilz_industrial_motion_planner"
+    assert backend.plan_calls[0]["planner_id"] == "PTP"
+    assert backend.plan_calls[1]["planner_id"] == "LIN"
+    assert backend.plan_calls[2]["planner_id"] == "LIN"
+
+
 def test_plan_only_sequence_never_calls_execution_function():
     backend = FakePlanOnlyBackend()
 
@@ -210,6 +256,65 @@ def test_plan_only_candidate_screening_selects_reachable_candidate():
     assert backend.execution_calls == []
 
 
+def test_candidate_screening_rejects_candidate_when_grasp_stage_fails():
+    high_score_bad_grasp = {
+        **FAKE_CANDIDATE,
+        "candidate_id": "high_score_bad_grasp",
+        "score": 0.99,
+        "pose": {
+            **FAKE_CANDIDATE["pose"],
+            "position": {"x": 0.6, "y": 0.8, "z": 0.3},
+        },
+    }
+    lower_score_full_sequence = {
+        **FAKE_CANDIDATE,
+        "candidate_id": "lower_score_full_sequence",
+        "score": 0.75,
+        "pose": {
+            **FAKE_CANDIDATE["pose"],
+            "position": {"x": 0.6, "y": 0.1, "z": 0.3},
+        },
+    }
+    backend = FakeSequenceReachabilityBackend()
+
+    result = screen_grasp_candidates_for_plan_only(
+        [high_score_bad_grasp, lower_score_full_sequence],
+        point_cloud={"frame": "base_link"},
+        preview_config={
+            "moveit": {
+                "pipeline_id": "pilz_industrial_motion_planner",
+                "planner_id": "PTP",
+                "stage_planner_ids": {
+                    "pregrasp": "PTP",
+                    "grasp": "LIN",
+                    "retreat": "LIN",
+                },
+            },
+            "candidate_screening": {
+                "enabled": True,
+                "max_candidates": 2,
+                "variants": ["full_pose"],
+            },
+        },
+        target_frame="base_link",
+        transformer=None,
+        backend=backend,
+        trajectory_validator=TrajectoryValidator(
+            {"trajectory_limits": {"max_joint_delta_rad": 1.0}}
+        ),
+    )
+
+    assert result["selected"]["candidate_id"] == "lower_score_full_sequence"
+    failed_attempts = [
+        attempt
+        for attempt in result["attempts"]
+        if attempt["candidate_id"] == "high_score_bad_grasp"
+    ]
+    assert failed_attempts[0]["failed_stage"] == "grasp"
+    assert backend.plan_calls[0]["planner_id"] == "PTP"
+    assert backend.plan_calls[1]["planner_id"] == "LIN"
+
+
 def test_prepare_candidate_preview_applies_tf_and_ee_transform():
     camera_candidate = {
         **FAKE_CANDIDATE,
@@ -237,6 +342,31 @@ def test_prepare_candidate_preview_applies_tf_and_ee_transform():
     assert poses["grasp"]["position"]["x"] == pytest.approx(1.5)
 
 
+def test_prepare_candidate_preview_can_retreat_in_target_frame():
+    poses = prepare_candidate_preview(
+        FAKE_CANDIDATE,
+        point_cloud={"frame": "base_link"},
+        preview_config={
+            "retreat_distance_m": 0.10,
+            "retreat_vector_frame": "target_frame",
+            "retreat_vector": [0.0, 0.0, 1.0],
+        },
+        target_frame="base_link",
+        transformer=None,
+    )
+
+    assert poses["retreat"]["frame"] == "base_link"
+    assert poses["retreat"]["position"]["x"] == pytest.approx(
+        poses["grasp"]["position"]["x"]
+    )
+    assert poses["retreat"]["position"]["y"] == pytest.approx(
+        poses["grasp"]["position"]["y"]
+    )
+    assert poses["retreat"]["position"]["z"] == pytest.approx(
+        poses["grasp"]["position"]["z"] + 0.10
+    )
+
+
 def test_planning_variant_kwargs_supports_position_only():
     kwargs = planning_variant_kwargs(
         "position_only",
@@ -253,6 +383,7 @@ def test_moveit_planning_kwargs_reads_preview_config():
     kwargs = moveit_planning_kwargs(
         {
             "moveit": {
+                "pipeline_id": "pilz_industrial_motion_planner",
                 "planner_id": "RRTConnectkConfigDefault",
                 "num_planning_attempts": 8,
                 "allowed_planning_time_sec": 7.5,
@@ -262,10 +393,34 @@ def test_moveit_planning_kwargs_reads_preview_config():
     )
 
     assert kwargs == {
+        "pipeline_id": "pilz_industrial_motion_planner",
         "planner_id": "RRTConnectkConfigDefault",
         "num_planning_attempts": 8,
         "allowed_planning_time": 7.5,
         "service_timeout_sec": 12.0,
+    }
+
+
+def test_moveit_stage_planning_kwargs_overrides_pilz_stage_planners():
+    preview_config = {
+        "moveit": {
+            "pipeline_id": "pilz_industrial_motion_planner",
+            "planner_id": "PTP",
+            "stage_planner_ids": {
+                "pregrasp": "PTP",
+                "grasp": "LIN",
+                "retreat": "LIN",
+            },
+        }
+    }
+
+    assert moveit_stage_planning_kwargs(preview_config, "pregrasp") == {
+        "pipeline_id": "pilz_industrial_motion_planner",
+        "planner_id": "PTP",
+    }
+    assert moveit_stage_planning_kwargs(preview_config, "grasp") == {
+        "pipeline_id": "pilz_industrial_motion_planner",
+        "planner_id": "LIN",
     }
 
 

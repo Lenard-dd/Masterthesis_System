@@ -743,6 +743,7 @@ class UR5MoveItPlanBackend:
                 kwargs.get("use_orientation_constraint", True)
             ),
             planner_id=kwargs.get("planner_id", ""),
+            pipeline_id=kwargs.get("pipeline_id", ""),
             num_planning_attempts=int(kwargs.get("num_planning_attempts", 1)),
             allowed_planning_time=float(kwargs.get("allowed_planning_time", 5.0)),
             service_timeout_sec=float(kwargs.get("service_timeout_sec", 10.0)),
@@ -787,6 +788,7 @@ class UR5MoveItPlanBackend:
         orientation_tolerance: float = 0.05,
         use_orientation_constraint: bool = True,
         planner_id: str = "",
+        pipeline_id: str = "",
         num_planning_attempts: int = 1,
         allowed_planning_time: float = 5.0,
         service_timeout_sec: float = 10.0,
@@ -818,6 +820,8 @@ class UR5MoveItPlanBackend:
             request = GetMotionPlan.Request()
             motion_request = request.motion_plan_request
             motion_request.group_name = self.planning_group
+            if pipeline_id and hasattr(motion_request, "pipeline_id"):
+                motion_request.pipeline_id = str(pipeline_id)
             if planner_id:
                 motion_request.planner_id = str(planner_id)
             motion_request.num_planning_attempts = max(1, int(num_planning_attempts))
