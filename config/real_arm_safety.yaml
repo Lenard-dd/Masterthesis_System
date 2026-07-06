@@ -1,0 +1,39 @@
+real_arm_safety:
+  enabled: true
+  execution_mode: restricted_real_motion
+
+  require_human_confirmation_each_motion: true
+  confirmation_phrase: EXECUTE
+
+  limits:
+    max_cartesian_step_m: 0.05
+    max_joint_delta_rad: 0.25
+    max_total_joint_delta_rad: 1.20
+    max_velocity_scale: 0.05
+    max_acceleration_scale: 0.05
+    min_planning_time_sec: 2.0
+
+  allowed_real_motion_skills:
+    - move_to_named_target
+    - move_to_pregrasp
+    - retreat_grasp
+    - move_to_safe_home
+    - move_to_observe
+
+  blocked_real_motion_skills:
+    - approach_grasp
+    - close_gripper_during_contact
+    - lift_object
+    - pick_object
+    - execute_pick_sequence
+
+  allowed_named_targets:
+    - safe_home
+    - observe
+
+  gripper:
+    allow_real_gripper_during_arm_test: true
+    allow_open_gripper: true
+    allow_set_width: true
+    allow_close_gripper: false
+    safe_close_width_m: 0.04

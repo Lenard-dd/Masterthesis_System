@@ -1,4 +1,5 @@
 import importlib
+from dataclasses import replace
 
 from llm_skill_robot.ros_hw_perception_gripper_demo import (
     ARM_BLOCK_MESSAGE,
@@ -118,8 +119,20 @@ class FakeValidator:
 
 
 def _controller():
+    hardware_mode = load_hardware_mode()
+    hardware_mode = replace(
+        hardware_mode,
+        mode="real_camera_real_gripper_arm_safe",
+        arm=replace(
+            hardware_mode.arm,
+            real_arm_enabled=False,
+            allow_arm_execution=False,
+            allow_moveit_execution=False,
+            execution_mode="disabled",
+        ),
+    )
     return HardwareSafeDemoController(
-        hardware_mode=load_hardware_mode(),
+        hardware_mode=hardware_mode,
         perception_pipeline=FakePerceptionPipeline(),
         point_cloud_builder=FakePointCloudBuilder(),
         grasp_planner=FakeGraspPlanner(),

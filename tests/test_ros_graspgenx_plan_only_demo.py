@@ -442,7 +442,7 @@ def test_pregrasp_diagnostics_runs_full_relaxed_and_position_only_plans():
 
 
 def test_real_arm_execution_blocked_even_after_confirmation():
-    with pytest.raises(PermissionError, match="disabled by hardware_mode.yaml"):
+    with pytest.raises(PermissionError, match="HW4 never executes real arm trajectories"):
         attempt_real_arm_execution(load_hardware_mode(), confirmed=True)
 
 

@@ -1,5 +1,5 @@
 hardware_mode:
-  mode: real_camera_real_gripper_arm_safe
+  mode: real_camera_real_gripper_restricted_arm
 
   camera:
     enabled: true
@@ -16,9 +16,10 @@ hardware_mode:
     conda_env: graspgenx
 
   arm:
-    real_arm_enabled: false
-    allow_arm_execution: false
-    allow_moveit_execution: false
+    real_arm_enabled: true
+    allow_arm_execution: true
+    execution_mode: restricted_real_motion
+    allow_moveit_execution: true
     allow_rviz_fake_execution: true
     allow_plan_only: true
     require_human_confirmation: true

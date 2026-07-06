@@ -65,8 +65,8 @@ def test_llm_pick_plan_in_hardware_mode_contains_only_safe_stages():
     assert "execute_trajectory" not in skill_ids
     assert skill_ids[-3:] == ["move_to_pregrasp", "approach_grasp", "retreat_grasp"]
     prompt = client.messages[0][1]["content"]
-    assert "real_camera_real_gripper_arm_safe" in prompt
-    assert "Do not generate pick_object in arm-safe hardware mode" in prompt
+    assert "real_camera_real_gripper_restricted_arm" in prompt
+    assert "Do not generate pick_object in restricted-arm hardware mode" in prompt
 
 
 def test_llm_direct_pick_output_is_rejected_even_if_prompt_is_ignored():
@@ -218,7 +218,7 @@ def test_audit_records_hardware_mode(tmp_path):
     )
 
     entry = json.loads(log_file.read_text().splitlines()[0])
-    assert entry["hardware_mode"] == "real_camera_real_gripper_arm_safe"
+    assert entry["hardware_mode"] == "real_camera_real_gripper_restricted_arm"
     assert entry["real_arm_execution_blocked"] is True
     assert "real_camera_used" in entry
     assert "real_gripper_command_requested" in entry

@@ -35,6 +35,7 @@ class ArmMode:
     allow_rviz_fake_execution: bool
     allow_plan_only: bool
     require_human_confirmation: bool
+    execution_mode: str = "disabled"
 
 
 @dataclass(frozen=True)
@@ -116,6 +117,10 @@ def _validate_mode(mode: HardwareMode) -> None:
         raise ValueError("Gripper speed and force limits must be non-negative.")
     if mode.arm.allow_arm_execution and not mode.arm.real_arm_enabled:
         raise ValueError("Arm execution cannot be allowed while real_arm_enabled is false.")
+    if mode.arm.allow_arm_execution and mode.arm.execution_mode != "restricted_real_motion":
+        raise ValueError(
+            "Real arm execution may only be enabled with restricted_real_motion."
+        )
 
 
 def print_hardware_mode(mode: HardwareMode) -> None:
@@ -131,6 +136,8 @@ def print_hardware_mode(mode: HardwareMode) -> None:
     print(f"SAM3: {mode.sam3.execution.replace('_', ' ')}")
     print(f"GraspGenX: {mode.graspgenx.execution.replace('_', ' ')}")
     print(f"Arm execution: {arm}")
+    if arm == "ENABLED":
+        print(f"Arm execution mode: {mode.arm.execution_mode}")
     print(f"Gripper execution: {gripper}")
     if gripper != "DISABLED":
         print(

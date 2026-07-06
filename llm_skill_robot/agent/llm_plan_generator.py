@@ -143,12 +143,12 @@ class LLMPlanGenerator(BasePlanGenerator):
                 "raw_ros_commands": "BLOCKED",
                 "raw_gripper_driver_commands": "BLOCKED",
                 "instruction": (
-                    "In real_camera_real_gripper_arm_safe mode, never generate "
-                    "pick_object or any real-arm execution step. For 'pick the X', "
-                    "generate only a staged perception, candidate review, optional "
-                    "confirmed gripper-width test, and plan-only motion preview. "
-                    "Human approval is trusted runtime input and must never be "
-                    "invented as a plan parameter."
+                    "In real_camera_real_gripper_restricted_arm mode, never generate "
+                    "pick_object or any autonomous real-arm execution sequence. "
+                    "For 'pick the X', generate only a staged perception, candidate "
+                    "review, optional confirmed gripper-width test, and restricted "
+                    "motion preview/request stages. Human approval is trusted runtime "
+                    "input and must never be invented as a plan parameter."
                 ),
                 "safe_staged_plan": [
                     "move_to_named_target observe (plan-only or RViz/fake only)",
@@ -186,7 +186,7 @@ class LLMPlanGenerator(BasePlanGenerator):
                 "Do not output ROS commands.",
                 "Do not output raw trajectories.",
                 "Do not generate raw gripper commands.",
-                "Do not generate pick_object in arm-safe hardware mode.",
+                "Do not generate pick_object in restricted-arm hardware mode.",
                 "Do not claim or encode human confirmation in plan parameters.",
                 "Use only skill_id values from available_skills.",
             ],
@@ -304,7 +304,11 @@ class LLMPlanGenerator(BasePlanGenerator):
                     f"LLM generated unavailable skill_id: {step.skill_id}"
                 )
             if (
-                self.hardware_mode.mode == "real_camera_real_gripper_arm_safe"
+                self.hardware_mode.mode
+                in {
+                    "real_camera_real_gripper_arm_safe",
+                    "real_camera_real_gripper_restricted_arm",
+                }
                 and step.skill_id in forbidden_skill_ids
             ):
                 raise PlanGenerationError(

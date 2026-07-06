@@ -11,14 +11,14 @@ from llm_skill_robot.safety.hardware_mode import (
 
 def test_default_hardware_mode_loads():
     mode = load_hardware_mode()
-    assert mode.mode == "real_camera_real_gripper_arm_safe"
+    assert mode.mode == "real_camera_real_gripper_restricted_arm"
     assert mode.camera.enabled is True
     assert mode.camera.type == "d435i"
+    assert mode.arm.execution_mode == "restricted_real_motion"
 
 
-def test_arm_execution_is_blocked():
-    with pytest.raises(PermissionError, match="Real arm execution is disabled"):
-        assert_arm_execution_allowed(load_hardware_mode())
+def test_restricted_arm_execution_is_enabled_by_hardware_mode():
+    assert assert_arm_execution_allowed(load_hardware_mode()) is None
 
 
 def test_gripper_execution_is_allowed():
@@ -52,5 +52,6 @@ def test_hardware_mode_summary_is_printed(capsys):
     assert "Camera: REAL D435i" in output
     assert "SAM3: conda subprocess" in output
     assert "GraspGenX: conda subprocess" in output
-    assert "Arm execution: DISABLED" in output
+    assert "Arm execution: ENABLED" in output
+    assert "Arm execution mode: restricted_real_motion" in output
     assert "Gripper execution: ENABLED with limits" in output
