@@ -335,7 +335,7 @@ Supported adapter modes are `dry_run`, `topic_float`, explicitly mapped `topic_j
 ros2 run llm_skill_robot ros-check-real-gripper
 ```
 
-This diagnostic prints the active hardware safety settings, the driver configuration, and matching topics/actions/services containing `robotiq`, `gripper`, or `finger`. It never constructs the real backend or sends a command. Real UR5 arm execution remains disabled by `config/hardware_mode.yaml`.
+This diagnostic prints the active hardware safety settings, the driver configuration, and matching topics/actions/services containing `robotiq`, `gripper`, or `finger`. It never constructs the real backend or sends a command. UR5 arm motion is controlled separately by the restricted real-arm safety configuration.
 
 After configuring and checking the installed driver, start the interactive real-gripper test:
 
@@ -506,6 +506,20 @@ colcon build --packages-select llm_skill_robot --symlink-install
 source install/setup.zsh
 ros2 run llm_skill_robot ros-get-ur5-state
 ```
+
+## Real UR5 Restricted Status Check
+
+Before any restricted real-arm test, inspect the real UR5 driver, `/joint_states`, ros2_control controllers, MoveIt planning service, and active safety configuration:
+
+```bash
+cd ~/dev_ws
+source /opt/ros/humble/setup.zsh
+colcon build --packages-select llm_skill_robot --symlink-install
+source install/setup.zsh
+ros2 run llm_skill_robot ros-check-real-arm
+```
+
+The diagnostic is read-only. It subscribes to `/joint_states`, checks for the six UR5 joints, queries controller status when `/controller_manager/list_controllers` is available, and checks whether MoveIt's `/plan_kinematic_path` service is visible. It prints `REAL UR5 STATUS CHECK`, current joint positions, whether `hardware_mode.arm.allow_arm_execution` is enabled, and whether `real_arm_safety.execution_mode` is `restricted_real_motion`. It does not execute arm motion, send trajectories, or command the gripper.
 
 ## ROS Verification Demo
 
