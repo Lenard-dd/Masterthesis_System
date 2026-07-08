@@ -481,6 +481,83 @@ class UR5MoveItPlanBackend:
             output=output,
         )
 
+    def execute_cached_plan_real(
+        self,
+        plan_id: str,
+        final_confirmed: bool = False,
+    ) -> Dict[str, Any]:
+        """Execute a cached plan on the real arm after external safety approval."""
+        if self.execution_mode != "real_robot":
+            return self._execution_result(
+                success=False,
+                message="Real arm execution requires execution_mode='real_robot'.",
+                plan_id=plan_id,
+                output={},
+            )
+        try:
+            assert_arm_execution_allowed(self.hardware_mode)
+        except PermissionError as exc:
+            return self._execution_result(
+                success=False,
+                message=str(exc),
+                plan_id=plan_id,
+                output={},
+            )
+        if not self.hardware_mode.arm.allow_moveit_execution:
+            return self._execution_result(
+                success=False,
+                message="MoveIt real arm execution is disabled by hardware_mode.yaml.",
+                plan_id=plan_id,
+                output={},
+            )
+        if not final_confirmed:
+            return self._execution_result(
+                success=False,
+                message="Final EXECUTE confirmation is required before real arm execution.",
+                plan_id=plan_id,
+                output={},
+            )
+
+        cached_plan = self.get_plan(plan_id)
+        if cached_plan is None:
+            return self._execution_result(
+                success=False,
+                message=f"No cached plan found for plan_id '{plan_id}'.",
+                plan_id=plan_id,
+                output={},
+            )
+        if not cached_plan.summary.success:
+            return self._execution_result(
+                success=False,
+                message="Cached plan summary indicates planning failed.",
+                plan_id=plan_id,
+                output={},
+            )
+        if not self._moveit_execution_interface_available(plan_id):
+            return self._execution_result(
+                success=False,
+                message="MoveIt execution interface is not available for this cached plan.",
+                plan_id=plan_id,
+                output={},
+            )
+
+        try:
+            output = self._execute_plan_in_rviz_sim(plan_id)
+        except Exception as exc:
+            return self._execution_result(
+                success=False,
+                message=f"MoveIt real arm execution failed: {exc}",
+                plan_id=plan_id,
+                output={},
+            )
+
+        return self._execution_result(
+            success=True,
+            message="Cached plan executed on the real UR5 arm.",
+            plan_id=plan_id,
+            output=output,
+        )
+
     def shutdown(self) -> None:
         """Destroy only resources created by this backend."""
         if self._owns_node and self.node is not None:

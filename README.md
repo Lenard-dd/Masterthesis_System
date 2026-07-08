@@ -521,6 +521,20 @@ ros2 run llm_skill_robot ros-check-real-arm
 
 The diagnostic is read-only. It subscribes to `/joint_states`, checks for the six UR5 joints, queries controller status when `/controller_manager/list_controllers` is available, and checks whether MoveIt's `/plan_kinematic_path` service is visible. It prints `REAL UR5 STATUS CHECK`, current joint positions, whether `hardware_mode.arm.allow_arm_execution` is enabled, and whether `real_arm_safety.execution_mode` is `restricted_real_motion`. It does not execute arm motion, send trajectories, or command the gripper.
 
+## Real UR5 Restricted Single-Motion Test
+
+After the read-only status check is clean and the robot workspace is physically clear, start the interactive restricted real-arm test:
+
+```bash
+cd ~/dev_ws
+source /opt/ros/humble/setup.zsh
+colcon build --packages-select llm_skill_robot --symlink-install
+source install/setup.zsh
+ros2 run llm_skill_robot ros-real-arm-safe-motion-test
+```
+
+This CLI can move the real UR5. It is limited to single named-target motions such as `safe_home` and `observe`, uses the low velocity and acceleration limits from `config/real_arm_safety.yaml`, and requires the exact phrase `EXECUTE` before every motion. It will not run a pick sequence and blocks `approach_grasp`, `pick_object`, and `lift_object`. Every requested, planned, rejected, confirmed, executed, and failed real-arm motion is written to `real_arm_motion_audit.log`.
+
 ## ROS Verification Demo
 
 Read the current UR5 joint state and verify a hardcoded plan without moving the robot:
