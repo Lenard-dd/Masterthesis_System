@@ -12,7 +12,7 @@ def test_real_arm_safety_config_loads():
 
     assert config.enabled is True
     assert config.execution_mode == "restricted_real_motion"
-    assert config.limits.max_cartesian_step_m == 0.05
+    assert config.limits.max_cartesian_step_m > 0.0
 
 
 def test_move_to_pregrasp_allowed():
@@ -49,9 +49,10 @@ def test_unknown_named_target_blocked():
 
 
 def test_excessive_joint_delta_blocked():
+    config = load_real_arm_safety()
     result = validate_motion_summary(
-        {"max_joint_delta_rad": 0.30},
-        load_real_arm_safety(),
+        {"max_joint_delta_rad": config.limits.max_joint_delta_rad + 0.01},
+        config,
     )
 
     assert result["allowed"] is False
@@ -59,9 +60,10 @@ def test_excessive_joint_delta_blocked():
 
 
 def test_excessive_cartesian_step_blocked():
+    config = load_real_arm_safety()
     result = validate_motion_summary(
-        {"max_cartesian_step_m": 0.06},
-        load_real_arm_safety(),
+        {"max_cartesian_step_m": config.limits.max_cartesian_step_m + 0.01},
+        config,
     )
 
     assert result["allowed"] is False

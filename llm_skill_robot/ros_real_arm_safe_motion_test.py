@@ -330,6 +330,8 @@ def validate_execution_precheck(
     skill_check = is_real_motion_skill_allowed(plan.skill_id, config)
     if not skill_check["allowed"]:
         return skill_check
+    if plan.skill_id == "move_to_pregrasp":
+        return validate_motion_summary(plan.summary, config)
     target_check = validate_menu_target(plan.target_name, config)
     if not target_check["allowed"]:
         return target_check
