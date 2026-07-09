@@ -542,7 +542,10 @@ class UR5MoveItPlanBackend:
             )
 
         try:
-            output = self._execute_plan_in_rviz_sim(plan_id)
+            if self._moveit2 is not None:
+                output = self._execute_plan_in_rviz_sim(plan_id)
+            else:
+                output = self._execute_plan_via_execute_trajectory_action(plan_id)
         except Exception as exc:
             return self._execution_result(
                 success=False,
@@ -1023,7 +1026,14 @@ class UR5MoveItPlanBackend:
             return False
 
     def _moveit_execution_interface_available(self, plan_id: str) -> bool:
-        return self._moveit2 is not None and self.has_executable_trajectory(plan_id)
+        if self._moveit2 is not None and self.has_executable_trajectory(plan_id):
+            return True
+        cached_plan = self.get_cached_plan(plan_id)
+        if cached_plan is None:
+            return False
+        if cached_plan.target_command is not None:
+            return False
+        return extract_joint_trajectory(cached_plan).success
 
     def _execute_plan_in_rviz_sim(self, plan_id: str) -> Dict[str, Any]:
         """Execute only a backend-cached MoveIt plan in simulated execution mode."""
@@ -1082,6 +1092,84 @@ class UR5MoveItPlanBackend:
             "trajectory_source": extraction.source,
             "moveit_execution_succeeded": executed,
         }
+
+    def _execute_plan_via_execute_trajectory_action(self, plan_id: str) -> Dict[str, Any]:
+        """Execute a cached RobotTrajectory through MoveIt's ExecuteTrajectory action."""
+        cached_plan = self.get_cached_plan(plan_id)
+        if cached_plan is None:
+            raise RuntimeError(f"No cached plan found for plan_id '{plan_id}'.")
+        if self.node is None or not hasattr(self.node, "create_client"):
+            raise RuntimeError("ROS node is not available for ExecuteTrajectory action.")
+
+        try:
+            import rclpy
+            from rclpy.action import ActionClient
+            from moveit_msgs.action import ExecuteTrajectory
+        except Exception as exc:
+            raise RuntimeError(f"MoveIt ExecuteTrajectory action types are unavailable: {exc}") from exc
+
+        robot_trajectory, trajectory_source = self._robot_trajectory_for_execute_action(cached_plan)
+        joint_trajectory = getattr(robot_trajectory, "joint_trajectory", None)
+        self._debug_execution_input(
+            plan_id=plan_id,
+            trajectory_type=type(robot_trajectory).__name__,
+            joint_names=list(getattr(joint_trajectory, "joint_names", []) or []),
+            num_points=len(getattr(joint_trajectory, "points", []) or []),
+        )
+
+        action_client = ActionClient(self.node, ExecuteTrajectory, "/execute_trajectory")
+        if not action_client.wait_for_server(timeout_sec=5.0):
+            raise RuntimeError("MoveIt /execute_trajectory action server is not available.")
+
+        goal = ExecuteTrajectory.Goal()
+        goal.trajectory = robot_trajectory
+        send_goal_future = action_client.send_goal_async(goal)
+        rclpy.spin_until_future_complete(self.node, send_goal_future, timeout_sec=5.0)
+        if not send_goal_future.done() or send_goal_future.result() is None:
+            raise RuntimeError("Timed out sending ExecuteTrajectory goal.")
+
+        goal_handle = send_goal_future.result()
+        if not getattr(goal_handle, "accepted", False):
+            raise RuntimeError("MoveIt rejected the ExecuteTrajectory goal.")
+
+        result_future = goal_handle.get_result_async()
+        rclpy.spin_until_future_complete(self.node, result_future, timeout_sec=120.0)
+        if not result_future.done() or result_future.result() is None:
+            raise RuntimeError("Timed out waiting for ExecuteTrajectory result.")
+
+        action_result = result_future.result().result
+        error_code = getattr(action_result, "error_code", None)
+        error_value = getattr(error_code, "val", None)
+        if error_value not in (None, 1):
+            error_name = MOVEIT_ERROR_CODE_NAMES.get(error_value, str(error_value))
+            raise RuntimeError(f"MoveIt ExecuteTrajectory failed: {error_name}.")
+
+        return {
+            "real_execution": True,
+            "command_type": "moveit_execute_trajectory_action",
+            "trajectory_source": trajectory_source,
+            "moveit_execution_succeeded": True,
+            "moveit_error_code": error_value,
+        }
+
+    @staticmethod
+    def _robot_trajectory_for_execute_action(cached_plan):
+        robot_trajectory = getattr(cached_plan, "robot_trajectory", None)
+        if robot_trajectory is not None and hasattr(robot_trajectory, "joint_trajectory"):
+            return robot_trajectory, "cached_plan.robot_trajectory"
+
+        extraction = extract_joint_trajectory(cached_plan)
+        if not extraction.success:
+            raise RuntimeError(extraction.reason)
+
+        try:
+            from moveit_msgs.msg import RobotTrajectory
+        except Exception as exc:
+            raise RuntimeError(f"moveit_msgs.msg.RobotTrajectory is unavailable: {exc}") from exc
+
+        robot_trajectory = RobotTrajectory()
+        robot_trajectory.joint_trajectory = extraction.joint_trajectory
+        return robot_trajectory, extraction.source
 
     @staticmethod
     def _debug_execution_input(

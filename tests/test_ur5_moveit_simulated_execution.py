@@ -60,6 +60,20 @@ class EmptyPlanRvizSimBackend(UR5MoveItPlanBackend):
         return FakeEmptyMoveItPlanResult()
 
 
+class RealExecutionActionFallbackBackend(UR5MoveItPlanBackend):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.action_executed_plan_id = None
+
+    def _execute_plan_via_execute_trajectory_action(self, plan_id: str):
+        self.action_executed_plan_id = plan_id
+        return {
+            "real_execution": True,
+            "command_type": "moveit_execute_trajectory_action",
+            "moveit_execution_succeeded": True,
+        }
+
+
 def _rviz_sim_config():
     return {
         "mode": "rviz_sim",
@@ -465,3 +479,28 @@ def test_extract_joint_trajectory_rejects_invalid_dict():
     assert result.success is False
     assert result.joint_trajectory is None
     assert "No valid JointTrajectory found" in result.reason
+
+
+def test_real_execution_uses_execute_trajectory_action_fallback_without_pymoveit2():
+    backend = RealExecutionActionFallbackBackend(
+        dry_run=True,
+        execution_mode="real_robot",
+    )
+    summary = MotionPlanSummary(
+        plan_id="plan_real_action_fallback",
+        target_type="pose",
+        planning_group="ur_manipulator",
+        success=True,
+        message="Planning succeeded.",
+    )
+    entry = backend._cache_plan(
+        summary=summary,
+        skill_id="move_to_pregrasp",
+        joint_trajectory=FakeJointTrajectory(),
+    )
+
+    result = backend.execute_cached_plan_real(entry.plan_id, final_confirmed=True)
+
+    assert result["success"] is True
+    assert result["output"]["command_type"] == "moveit_execute_trajectory_action"
+    assert backend.action_executed_plan_id == entry.plan_id

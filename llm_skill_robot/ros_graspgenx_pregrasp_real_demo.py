@@ -23,6 +23,7 @@ from llm_skill_robot.ros_graspgenx_gripper_width_test import (
 )
 from llm_skill_robot.ros_graspgenx_plan_only_demo import (
     moveit_stage_planning_kwargs,
+    planning_variant_kwargs,
     prepare_candidate_preview,
 )
 from llm_skill_robot.ros_real_arm_safe_motion_test import (
@@ -51,6 +52,15 @@ class PregraspDemoResult:
     status: str
     message: str
     plan: LastMotionPlan | None = None
+
+
+@dataclass
+class PregraspSelection:
+    candidate: Any
+    variant: str
+    pregrasp_pose: dict[str, Any]
+    plan: LastMotionPlan
+    attempts: list[dict[str, Any]]
 
 
 class PregraspRealDemoController:
@@ -88,7 +98,7 @@ class PregraspRealDemoController:
         self,
         query: str,
         *,
-        open_gripper_confirmation: str = "",
+        open_gripper_confirmation: str | None = "",
         execute_confirmation: str | None = "",
     ) -> PregraspDemoResult:
         if not query.strip():
@@ -97,7 +107,6 @@ class PregraspRealDemoController:
             return self._blocked("move_to_pregrasp is not allowed by real_arm_safety.yaml.")
 
         self._audit("pregrasp_real_demo_started", query=query)
-        self._maybe_open_gripper(open_gripper_confirmation)
 
         detection = self.perception_pipeline.detect_object(query.strip(), require_pose=False)
         selected_object = _select_highest_confidence(detection.get("objects", []))
@@ -116,35 +125,16 @@ class PregraspRealDemoController:
             return self._blocked(
                 f"No GraspGenX candidates: {generation.get('message', 'none returned')}"
             )
-        candidate = self.grasp_planner.select_best_candidate(candidates)
-        if candidate is None:
-            return self._blocked("No valid GraspGenX candidate selected.")
-
-        try:
-            poses = prepare_candidate_preview(
-                candidate,
-                point_cloud,
-                self.preview_config,
-                target_frame="base_link",
-                transformer=self.transformer,
-            )
-        except ValueError as exc:
-            return self._blocked(f"Selected grasp pose is not usable: {exc}")
-
-        pregrasp_pose = poses["pregrasp"]
-        if pregrasp_pose.get("frame") != "base_link":
-            return self._blocked("Selected pregrasp pose is not in base_link.")
-        workspace_check = validate_pregrasp_workspace(pregrasp_pose, self.preview_config)
-        if not workspace_check["allowed"]:
-            return self._blocked(workspace_check["reason"])
-
-        plan = self._plan_pregrasp(pregrasp_pose)
-        if plan is None:
-            return self._blocked("MoveIt pregrasp planning failed.")
-
-        precheck = validate_execution_precheck(plan, self.real_arm_safety)
-        if not precheck["allowed"]:
-            return self._blocked(precheck["reason"], plan=plan)
+        selection = self.select_restricted_pregrasp_plan(candidates, point_cloud)
+        if selection is None:
+            return self._blocked("No GraspGenX candidate produced a safe reachable pregrasp.")
+        plan = selection.plan
+        print(
+            "\nSelected pregrasp candidate: "
+            f"id={_candidate_value(selection.candidate, 'candidate_id', 'unknown')} "
+            f"score={_candidate_value(selection.candidate, 'score')} "
+            f"variant={selection.variant}"
+        )
 
         print_motion_summary(plan.summary)
         if execute_confirmation is None:
@@ -169,6 +159,9 @@ class PregraspRealDemoController:
                 plan,
             )
 
+        if open_gripper_confirmation is None:
+            open_gripper_confirmation = input("Open real gripper before motion? Type YES:\n> ").strip()
+        self._maybe_open_gripper(open_gripper_confirmation)
         self._audit(
             "real_arm_motion_confirmed",
             plan_id=plan.plan_id,
@@ -192,6 +185,142 @@ class PregraspRealDemoController:
             plan,
         )
 
+    def select_restricted_pregrasp_plan(
+        self,
+        candidates: list[Any],
+        point_cloud: dict,
+    ) -> PregraspSelection | None:
+        screening_config = self.preview_config.get("candidate_screening", {}) or {}
+        max_candidates = max(1, int(screening_config.get("max_candidates", 12)))
+        variants = list(
+            screening_config.get(
+                "variants", ["relaxed_orientation", "full_pose", "position_only"]
+            )
+        )
+        if not screening_config.get("allow_position_only_fallback", True):
+            variants = [variant for variant in variants if variant != "position_only"]
+        valid_candidates = [
+            candidate
+            for candidate in candidates
+            if _candidate_value(candidate, "valid", True) is not False
+        ]
+        valid_candidates = sorted(
+            valid_candidates,
+            key=lambda candidate: float(_candidate_value(candidate, "score", 0.0) or 0.0),
+            reverse=True,
+        )[:max_candidates]
+
+        attempts: list[dict[str, Any]] = []
+        for candidate_index, candidate in enumerate(valid_candidates, start=1):
+            candidate_id = _candidate_value(candidate, "candidate_id", f"candidate_{candidate_index}")
+            try:
+                poses = prepare_candidate_preview(
+                    candidate,
+                    point_cloud,
+                    self.preview_config,
+                    target_frame="base_link",
+                    transformer=self.transformer,
+                )
+            except ValueError as exc:
+                attempts.append(
+                    {
+                        "candidate_id": candidate_id,
+                        "variant": "prepare",
+                        "accepted": False,
+                        "reason": str(exc),
+                    }
+                )
+                continue
+
+            pregrasp_pose = poses["pregrasp"]
+            if pregrasp_pose.get("frame") != "base_link":
+                attempts.append(
+                    {
+                        "candidate_id": candidate_id,
+                        "variant": "prepare",
+                        "accepted": False,
+                        "reason": "pregrasp pose is not in base_link",
+                    }
+                )
+                continue
+            workspace_check = validate_pregrasp_workspace(pregrasp_pose, self.preview_config)
+            if not workspace_check["allowed"]:
+                attempts.append(
+                    {
+                        "candidate_id": candidate_id,
+                        "variant": "workspace",
+                        "accepted": False,
+                        "reason": workspace_check["reason"],
+                    }
+                )
+                continue
+
+            for variant in variants:
+                try:
+                    plan = self._plan_pregrasp(
+                        pregrasp_pose,
+                        variant=variant,
+                        variant_kwargs=planning_variant_kwargs(variant, screening_config),
+                    )
+                except ValueError as exc:
+                    attempts.append(
+                        {
+                            "candidate_id": candidate_id,
+                            "variant": variant,
+                            "accepted": False,
+                            "reason": str(exc),
+                        }
+                    )
+                    continue
+                if plan is None:
+                    attempts.append(
+                        {
+                            "candidate_id": candidate_id,
+                            "variant": variant,
+                            "accepted": False,
+                            "reason": "MoveIt pregrasp planning failed",
+                        }
+                    )
+                    continue
+                precheck = validate_execution_precheck(plan, self.real_arm_safety)
+                if not precheck["allowed"]:
+                    attempts.append(
+                        {
+                            "candidate_id": candidate_id,
+                            "variant": variant,
+                            "accepted": False,
+                            "reason": precheck["reason"],
+                            "plan_id": plan.plan_id,
+                        }
+                    )
+                    continue
+                attempts.append(
+                    {
+                        "candidate_id": candidate_id,
+                        "variant": variant,
+                        "accepted": True,
+                        "plan_id": plan.plan_id,
+                    }
+                )
+                self._audit(
+                    "pregrasp_candidate_screening",
+                    selected_candidate_id=candidate_id,
+                    selected_variant=variant,
+                    attempts=attempts,
+                )
+                return PregraspSelection(candidate, variant, pregrasp_pose, plan, attempts)
+
+        self._audit("pregrasp_candidate_screening_failed", attempts=attempts)
+        print("\nPregrasp candidate screening rejected all candidates:")
+        for attempt in attempts[:20]:
+            print(
+                "- "
+                f"candidate={attempt.get('candidate_id')} "
+                f"variant={attempt.get('variant')} "
+                f"reason={attempt.get('reason')}"
+            )
+        return None
+
     def _build_point_cloud(self, selected_object: Any) -> dict:
         camera_backend = getattr(self.perception_pipeline, "backend", None)
         depth_getter = getattr(camera_backend, "_get_latest_depth_image", None)
@@ -202,7 +331,12 @@ class PregraspRealDemoController:
             frame=getattr(camera_backend, "config", {}).get("depth_frame", "base_link"),
         )
 
-    def _plan_pregrasp(self, pregrasp_pose: dict) -> LastMotionPlan | None:
+    def _plan_pregrasp(
+        self,
+        pregrasp_pose: dict,
+        variant: str = "default",
+        variant_kwargs: dict | None = None,
+    ) -> LastMotionPlan | None:
         velocity_scale = min(
             float(self.preview_config.get("velocity_scale", 0.05)),
             self.real_arm_safety.limits.max_velocity_scale,
@@ -223,7 +357,10 @@ class PregraspRealDemoController:
             velocity_scale=velocity_scale,
             acceleration_scale=acceleration_scale,
             skill_id="move_to_pregrasp",
-            **moveit_stage_planning_kwargs(self.preview_config, "pregrasp"),
+            **{
+                **moveit_stage_planning_kwargs(self.preview_config, "pregrasp"),
+                **(variant_kwargs or {}),
+            },
         )
         summary = build_restricted_motion_summary(
             result.get("summary", {}),
@@ -235,6 +372,7 @@ class PregraspRealDemoController:
             "real_arm_motion_planned",
             skill_id="move_to_pregrasp",
             target_name="selected_pregrasp",
+            variant=variant,
             plan_id=result.get("plan_id"),
             planning_success=bool(result.get("success")),
             summary=summary,
@@ -395,10 +533,9 @@ def main() -> None:
         wait_for_camera_messages(perception_pipeline.backend, node, rclpy)
 
         query = input("Enter object query:\n> ").strip()
-        open_confirmation = input("Open real gripper before motion? Type YES:\n> ").strip()
         result = controller.run_once(
             query,
-            open_gripper_confirmation=open_confirmation,
+            open_gripper_confirmation=None,
             execute_confirmation=None,
         )
         print(f"{result.status}: {result.message}")

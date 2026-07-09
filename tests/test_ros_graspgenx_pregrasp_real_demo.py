@@ -62,6 +62,42 @@ class FakeGraspPlanner:
         return candidates[0]
 
 
+class FirstCandidateOutsideWorkspacePlanner:
+    def generate_candidates(self, point_cloud_path):
+        return {
+            "success": True,
+            "candidates": [
+                {
+                    "candidate_id": "bad_high_score",
+                    "valid": True,
+                    "score": 0.99,
+                    "pose_frame": "base_link",
+                    "pose": {
+                        "frame": "base_link",
+                        "position": {"x": 0.4, "y": 0.0, "z": -0.3},
+                        "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+                    },
+                    "approach_vector": [0.0, 0.0, 1.0],
+                },
+                {
+                    "candidate_id": "good_lower_score",
+                    "valid": True,
+                    "score": 0.8,
+                    "pose_frame": "base_link",
+                    "pose": {
+                        "frame": "base_link",
+                        "position": {"x": 0.4, "y": 0.0, "z": 0.3},
+                        "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+                    },
+                    "approach_vector": [0.0, 0.0, 1.0],
+                },
+            ],
+        }
+
+    def select_best_candidate(self, candidates):
+        return candidates[0]
+
+
 class FakeMoveItBackend:
     def __init__(self):
         self.plan_calls = []
@@ -132,6 +168,12 @@ def _controller():
     return controller, moveit, gripper
 
 
+def _controller_with_planner(planner):
+    controller, moveit, gripper = _controller()
+    controller.grasp_planner = planner
+    return controller, moveit, gripper
+
+
 def test_module_imports_without_ros_initialization():
     module = importlib.import_module("llm_skill_robot.ros_graspgenx_pregrasp_real_demo")
 
@@ -151,6 +193,19 @@ def test_fake_pipeline_can_reach_pregrasp_planning_stage():
     assert len(moveit.plan_calls) == 1
     assert moveit.execute_calls == []
     assert gripper.close_calls == []
+
+
+def test_bad_high_score_candidate_is_skipped_for_safe_pregrasp():
+    controller, moveit, _gripper = _controller_with_planner(
+        FirstCandidateOutsideWorkspacePlanner()
+    )
+
+    result = controller.run_once("cube", execute_confirmation="no")
+
+    assert result.status == "CANCELLED"
+    assert result.plan is not None
+    assert len(moveit.plan_calls) == 1
+    assert result.plan.plan_id == "plan_pregrasp"
 
 
 def test_execution_blocked_without_execute():
