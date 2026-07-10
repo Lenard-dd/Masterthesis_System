@@ -75,6 +75,11 @@ class AuditLogger:
         entry.setdefault("real_gripper_command_requested", False)
         entry.setdefault("real_gripper_command_sent", False)
         entry.setdefault("real_arm_execution_blocked", False)
+        entry.setdefault("restricted_real_motion_mode_active", False)
+        entry.setdefault("unsafe_llm_step_blocked", False)
+        entry.setdefault("real_arm_step_requires_confirmation", False)
+        entry.setdefault("real_gripper_step_requires_confirmation", False)
+        entry.setdefault("real_arm_motion_executed", False)
         entry.setdefault("grasp_candidate_reviewed", False)
         with open(self.log_file, 'a') as f:
             f.write(json.dumps(entry) + '\n')

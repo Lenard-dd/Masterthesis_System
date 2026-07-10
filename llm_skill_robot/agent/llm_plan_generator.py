@@ -108,7 +108,9 @@ class LLMPlanGenerator(BasePlanGenerator):
                     "Robotiq 2F-140 gripper actions. Do not generate raw gripper "
                     "commands, ROS topics, driver calls, or hardware commands."
                     " Prefer test_gripper_width for a reviewed GraspGenX width; "
-                    "the runtime, never the LLM, supplies exact YES confirmation."
+                    "the runtime, never the LLM, supplies exact YES confirmation. "
+                    "In restricted_real_motion mode, do not close the gripper on "
+                    "an object or during contact."
                 ),
             },
             "perception_rules": {
@@ -132,34 +134,38 @@ class LLMPlanGenerator(BasePlanGenerator):
                 "instruction": (
                     "Do not use move_to_named_target for pickup or place actions. "
                     "move_to_named_target may only use named targets explicitly "
-                    "listed in its allowed_values, such as home or observe. For "
-                    "object picking, use detect_object followed by pick_object."
+                    "listed in its allowed_values, such as home or observe. In "
+                    "restricted_real_motion mode, object picking must be staged "
+                    "and must not use pick_object."
                 ),
             },
             "arm_safe_pick_rules": {
                 "mode": self.hardware_mode.mode,
-                "real_arm_execution": "BLOCKED",
+                "real_arm_execution": "RESTRICTED_STAGED_ONLY",
                 "direct_pick_object": "BLOCKED",
+                "approach_grasp": "BLOCKED",
+                "lift_object": "BLOCKED",
+                "close_gripper_on_object": "BLOCKED",
                 "raw_ros_commands": "BLOCKED",
                 "raw_gripper_driver_commands": "BLOCKED",
                 "instruction": (
                     "In real_camera_real_gripper_restricted_arm mode, never generate "
-                    "pick_object or any autonomous real-arm execution sequence. "
-                    "For 'pick the X', generate only a staged perception, candidate "
-                    "review, optional confirmed gripper-width test, and restricted "
-                    "motion preview/request stages. Human approval is trusted runtime "
-                    "input and must never be invented as a plan parameter."
+                    "pick_object, approach_grasp, lift_object, close_gripper on an "
+                    "object, or any autonomous pick sequence. For 'pick the X', "
+                    "generate only staged perception, candidate review, optional "
+                    "confirmed gripper opening, restricted pregrasp motion, and "
+                    "confirmed candidate-width test. Human approval is trusted "
+                    "runtime input and must never be invented as a plan parameter."
                 ),
                 "safe_staged_plan": [
-                    "move_to_named_target observe (plan-only or RViz/fake only)",
-                    "detect_object query=X",
+                    "move_to_named_target observe (plan or restricted execution only)",
+                    "detect_object query=\"X\"",
                     "build_object_point_cloud object_id=<resolved>",
                     "generate_grasp_pose object_id=<resolved>",
                     "review_grasp_candidate object_id=<resolved>",
-                    "test_gripper_width using reviewed candidate width; exact YES is requested at runtime",
-                    "move_to_pregrasp object_id=<resolved> (plan-only preview)",
-                    "approach_grasp object_id=<resolved> (plan-only preview)",
-                    "retreat_grasp object_id=<resolved> (plan-only preview)",
+                    "open_gripper (only with exact YES confirmation requested at runtime)",
+                    "move_to_pregrasp object_id=<resolved> (only with exact EXECUTE confirmation requested at runtime)",
+                    "test_gripper_width object_id=<resolved> (only with exact YES confirmation requested at runtime)",
                 ],
                 "compatibility_note": (
                     "If a staged schema explicitly uses set_gripper_width, its "
@@ -187,6 +193,7 @@ class LLMPlanGenerator(BasePlanGenerator):
                 "Do not output raw trajectories.",
                 "Do not generate raw gripper commands.",
                 "Do not generate pick_object in restricted-arm hardware mode.",
+                "Do not generate approach_grasp, lift_object, or close_gripper on an object in restricted_real_motion mode.",
                 "Do not claim or encode human confirmation in plan parameters.",
                 "Use only skill_id values from available_skills.",
             ],
@@ -291,6 +298,11 @@ class LLMPlanGenerator(BasePlanGenerator):
             "send_ros_command",
             "raw_gripper_command",
         }
+        restricted_forbidden_skill_ids = forbidden_skill_ids | {
+            "approach_grasp",
+            "lift_object",
+            "execute_pick_sequence",
+        }
         raw_parameter_names = {
             "ros_command",
             "command_topic",
@@ -299,20 +311,23 @@ class LLMPlanGenerator(BasePlanGenerator):
             "driver_command",
         }
         for step in plan.steps:
+            hardware_restricted = self._restricted_real_motion_active()
+            hardware_arm_safe = self.hardware_mode.mode in {
+                "real_camera_real_gripper_arm_safe",
+                "real_camera_real_gripper_restricted_arm",
+            }
+            blocked_ids = (
+                restricted_forbidden_skill_ids
+                if hardware_restricted
+                else forbidden_skill_ids
+            )
+            if hardware_arm_safe and step.skill_id in blocked_ids:
+                raise PlanGenerationError(
+                    f"LLM generated hardware-mode-blocked skill_id: {step.skill_id}"
+                )
             if step.skill_id not in available_ids:
                 raise PlanGenerationError(
                     f"LLM generated unavailable skill_id: {step.skill_id}"
-                )
-            if (
-                self.hardware_mode.mode
-                in {
-                    "real_camera_real_gripper_arm_safe",
-                    "real_camera_real_gripper_restricted_arm",
-                }
-                and step.skill_id in forbidden_skill_ids
-            ):
-                raise PlanGenerationError(
-                    f"LLM generated hardware-mode-blocked skill_id: {step.skill_id}"
                 )
             unsafe_parameters = raw_parameter_names.intersection(step.parameters)
             if unsafe_parameters:
@@ -327,6 +342,14 @@ class LLMPlanGenerator(BasePlanGenerator):
             unsafe_text = json.dumps(
                 {"description": step.description, "parameters": step.parameters}
             ).lower()
+            if hardware_restricted and step.skill_id == "close_gripper":
+                if any(
+                    marker in unsafe_text
+                    for marker in ("during_contact", "contact", "on object", "object")
+                ):
+                    raise PlanGenerationError(
+                        "LLM generated hardware-mode-blocked close_gripper during contact."
+                    )
             if any(
                 marker in unsafe_text
                 for marker in (
@@ -338,3 +361,10 @@ class LLMPlanGenerator(BasePlanGenerator):
                 )
             ):
                 raise PlanGenerationError("LLM generated a raw ROS or driver command.")
+
+    def _restricted_real_motion_active(self) -> bool:
+        return (
+            self.hardware_mode.mode == "real_camera_real_gripper_restricted_arm"
+            or getattr(self.hardware_mode.arm, "execution_mode", None)
+            == "restricted_real_motion"
+        )

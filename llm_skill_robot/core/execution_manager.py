@@ -63,6 +63,14 @@ class ExecutionManager:
 
         context = context or {}
         hardware_mode = context.get("hardware_mode_object") or self.hardware_mode
+        restricted_real_motion = self._restricted_real_motion_active(
+            hardware_mode, context
+        )
+        if restricted_real_motion:
+            self._audit_hardware_event(
+                "restricted_real_motion_mode_active",
+                restricted_real_motion_mode_active=True,
+            )
         step_results = []
         execution_failed = False
 
@@ -140,7 +148,9 @@ class ExecutionManager:
             backend_result = backend_method(**backend_kwargs)
             step_result = self._convert_backend_result(step, backend_result)
             step_results.append(step_result)
-            self._audit_step_hardware_result(step, backend_result, step_result)
+            self._audit_step_hardware_result(
+                step, backend_result, step_result, restricted_real_motion
+            )
             if step_result.status != "SUCCESS":
                 execution_failed = True
 
@@ -166,6 +176,24 @@ class ExecutionManager:
     ) -> StepExecutionResult | None:
         if mode is None:
             return None
+        restricted_real_motion = self._restricted_real_motion_active(mode, context)
+        if restricted_real_motion:
+            if step.skill_id in {
+                "pick_object",
+                "approach_grasp",
+                "lift_object",
+                "execute_pick_sequence",
+            }:
+                return self._unsafe_llm_step_blocked(
+                    step,
+                    f"{step.skill_id} is blocked in restricted_real_motion mode.",
+                )
+            if step.skill_id == "close_gripper" and self._is_contact_close_step(step):
+                return self._unsafe_llm_step_blocked(
+                    step,
+                    "close_gripper during contact or on an object is blocked in restricted_real_motion mode.",
+                )
+
         if step.skill_id == "pick_object":
             self._audit_hardware_event(
                 "real_arm_execution_blocked",
@@ -180,11 +208,18 @@ class ExecutionManager:
             execution_mode = context.get(
                 "arm_execution_mode", getattr(self.robot_backend, "execution_mode", None)
             )
-            allowed_modes = (
-                {"dry_run", "plan_only", "rviz_sim"}
-                if step.skill_id == "move_to_named_target"
-                else {"dry_run", "plan_only"}
-            )
+            if restricted_real_motion:
+                allowed_modes = (
+                    {"dry_run", "plan_only", "rviz_sim", "restricted_real_motion"}
+                    if step.skill_id == "move_to_named_target"
+                    else {"dry_run", "plan_only", "restricted_real_motion"}
+                )
+            else:
+                allowed_modes = (
+                    {"dry_run", "plan_only", "rviz_sim"}
+                    if step.skill_id == "move_to_named_target"
+                    else {"dry_run", "plan_only"}
+                )
             if execution_mode not in allowed_modes:
                 self._audit_hardware_event(
                     "real_arm_execution_blocked",
@@ -195,13 +230,42 @@ class ExecutionManager:
                 return self._failed_step(
                     step, "Real arm execution is disabled by hardware_mode.yaml."
                 )
+            if (
+                restricted_real_motion
+                and execution_mode == "restricted_real_motion"
+                and step.skill_id in {"move_to_named_target", "move_to_pregrasp"}
+            ):
+                if not self._per_step_confirmation(
+                    context, "arm_confirmations", step.step_id, "EXECUTE"
+                ):
+                    self._audit_hardware_event(
+                        "real_arm_step_requires_confirmation",
+                        real_arm_step_requires_confirmation=True,
+                        step_id=step.step_id,
+                        skill_id=step.skill_id,
+                    )
+                    return self._failed_step(
+                        step,
+                        "Exact EXECUTE confirmation is required before each real arm motion.",
+                    )
         if step.skill_id in self.REAL_GRIPPER_SKILLS:
-            confirmations = context.get("gripper_confirmations", {})
-            confirmed = (
-                isinstance(confirmations, dict)
-                and confirmations.get(str(step.step_id)) == "YES"
-            ) or context.get("gripper_confirmation") == "YES"
+            if restricted_real_motion:
+                confirmed = self._per_step_confirmation(
+                    context, "gripper_confirmations", step.step_id, "YES"
+                )
+            else:
+                confirmations = context.get("gripper_confirmations", {})
+                confirmed = (
+                    isinstance(confirmations, dict)
+                    and confirmations.get(str(step.step_id)) == "YES"
+                ) or context.get("gripper_confirmation") == "YES"
             if not confirmed:
+                self._audit_hardware_event(
+                    "real_gripper_step_requires_confirmation",
+                    real_gripper_step_requires_confirmation=True,
+                    step_id=step.step_id,
+                    skill_id=step.skill_id,
+                )
                 return self._failed_step(
                     step,
                     "Exact YES confirmation is required before a real gripper command.",
@@ -259,7 +323,13 @@ class ExecutionManager:
             output={},
         )
 
-    def _audit_step_hardware_result(self, step, backend_result, step_result) -> None:
+    def _audit_step_hardware_result(
+        self,
+        step,
+        backend_result,
+        step_result,
+        restricted_real_motion: bool = False,
+    ) -> None:
         if step.skill_id == "detect_object" and step_result.status == "SUCCESS":
             self._audit_hardware_event("real_camera_used", real_camera_used=True)
         if step.skill_id == "review_grasp_candidate" and step_result.status == "SUCCESS":
@@ -276,10 +346,71 @@ class ExecutionManager:
                 step_id=step.step_id,
                 skill_id=step.skill_id,
             )
+            if sent:
+                self._audit_hardware_event(
+                    "real_gripper_command_sent",
+                    real_gripper_command_sent=True,
+                    step_id=step.step_id,
+                    skill_id=step.skill_id,
+                )
+        if (
+            restricted_real_motion
+            and step.skill_id in {"move_to_named_target", "move_to_pregrasp"}
+            and step_result.status == "SUCCESS"
+        ):
+            self._audit_hardware_event(
+                "real_arm_motion_executed",
+                real_arm_motion_executed=True,
+                step_id=step.step_id,
+                skill_id=step.skill_id,
+            )
 
     def _audit_hardware_event(self, event: str, **fields: Any) -> None:
         if self.audit_logger and hasattr(self.audit_logger, "log_hardware_safety_event"):
             self.audit_logger.log_hardware_safety_event(event, **fields)
+
+    def _unsafe_llm_step_blocked(self, step, message: str) -> StepExecutionResult:
+        self._audit_hardware_event(
+            "unsafe_llm_step_blocked",
+            unsafe_llm_step_blocked=True,
+            step_id=step.step_id,
+            skill_id=step.skill_id,
+            reason=message,
+        )
+        return self._failed_step(step, message)
+
+    @staticmethod
+    def _per_step_confirmation(
+        context: Dict[str, Any],
+        confirmation_key: str,
+        step_id: Any,
+        phrase: str,
+    ) -> bool:
+        confirmations = context.get(confirmation_key, {})
+        return isinstance(confirmations, dict) and confirmations.get(str(step_id)) == phrase
+
+    @staticmethod
+    def _restricted_real_motion_active(
+        mode: HardwareMode | None,
+        context: Dict[str, Any],
+    ) -> bool:
+        if context.get("arm_execution_mode") == "restricted_real_motion":
+            return True
+        if mode is None:
+            return False
+        return (
+            mode.mode == "real_camera_real_gripper_restricted_arm"
+            or getattr(mode.arm, "execution_mode", None) == "restricted_real_motion"
+        )
+
+    @staticmethod
+    def _is_contact_close_step(step) -> bool:
+        if step.parameters.get("during_contact") is True:
+            return True
+        if step.parameters.get("on_object") is True:
+            return True
+        text = f"{step.description} {step.parameters}".lower()
+        return "during_contact" in text or "contact" in text or "on object" in text
 
     def _is_human_approved(self, human_decision: Any) -> bool:
         if isinstance(human_decision, str):

@@ -10,6 +10,7 @@ from ..safety.hardware_mode import (
     HardwareMode,
     clamp_or_reject_gripper_command,
 )
+from ..safety.real_arm_safety import load_real_arm_safety, validate_motion_summary
 
 
 class PlanVerifier:
@@ -28,6 +29,12 @@ class PlanVerifier:
         "execute_trajectory",
         "execute_arm_motion",
         "move_real_arm",
+    }
+    RESTRICTED_REAL_ARM_BLOCKED_SKILLS = {
+        "approach_grasp",
+        "lift_object",
+        "pick_object",
+        "execute_pick_sequence",
     }
 
     def __init__(
@@ -62,6 +69,14 @@ class PlanVerifier:
         for step in plan.steps:
             skill = self.skill_library.get_skill(step.skill_id)
             if not skill:
+                if (
+                    hardware_mode is not None
+                    and self._restricted_real_motion_active(hardware_mode)
+                    and step.skill_id in self.RESTRICTED_REAL_ARM_BLOCKED_SKILLS
+                ):
+                    reasons.append(
+                        f"{step.skill_id} is blocked in restricted_real_motion mode."
+                    )
                 reasons.append(f"Unknown skill: {step.skill_id}")
                 continue
 
@@ -145,6 +160,12 @@ class PlanVerifier:
         reasons: list[str],
         warnings: list[str],
     ) -> None:
+        restricted_real_motion = self._restricted_real_motion_active(mode)
+        if restricted_real_motion:
+            self._verify_restricted_real_motion_step(
+                step, context, reasons
+            )
+
         if step.skill_id in self.REAL_ARM_EXECUTION_SKILLS:
             reasons.append("Real arm execution is disabled by hardware_mode.yaml.")
         if step.parameters.get("execution_mode") == "real_robot" or step.parameters.get("execute") is True:
@@ -158,13 +179,20 @@ class PlanVerifier:
             if not mode.arm.allow_plan_only:
                 reasons.append("Arm plan-only preview is disabled by hardware_mode.yaml.")
             if step.parameters.get("plan_only") is False:
-                reasons.append(f"{step.skill_id} must remain plan-only in arm-safe mode.")
+                if not (
+                    restricted_real_motion
+                    and step.skill_id in {"move_to_named_target", "move_to_pregrasp"}
+                ):
+                    reasons.append(f"{step.skill_id} must remain plan-only in arm-safe mode.")
             requested_mode = context.get("arm_execution_mode")
-            if step.skill_id != "move_to_named_target" and requested_mode not in {
-                None, "dry_run", "plan_only"
+            allowed_requested_modes = {None, "dry_run", "plan_only"}
+            if restricted_real_motion and step.skill_id in {
+                "move_to_named_target", "move_to_pregrasp"
             }:
+                allowed_requested_modes.add("restricted_real_motion")
+            if step.skill_id != "move_to_named_target" and requested_mode not in allowed_requested_modes:
                 reasons.append(f"{step.skill_id} may use only a plan-only backend.")
-            if requested_mode == "real_robot":
+            if requested_mode == "real_robot" and not restricted_real_motion:
                 reasons.append("Real arm execution is disabled by hardware_mode.yaml.")
 
         if step.skill_id in self.REAL_GRIPPER_SKILLS:
@@ -210,6 +238,106 @@ class PlanVerifier:
         if isinstance(confirmations, dict) and confirmations.get(str(step.step_id)) == "YES":
             return True
         return context.get("gripper_confirmation") == "YES"
+
+    @classmethod
+    def _restricted_real_motion_active(cls, mode: HardwareMode) -> bool:
+        return (
+            mode.mode == "real_camera_real_gripper_restricted_arm"
+            or getattr(mode.arm, "execution_mode", None) == "restricted_real_motion"
+        )
+
+    def _verify_restricted_real_motion_step(
+        self,
+        step,
+        context: Dict[str, Any],
+        reasons: list[str],
+    ) -> None:
+        if step.skill_id in self.RESTRICTED_REAL_ARM_BLOCKED_SKILLS:
+            reasons.append(
+                f"{step.skill_id} is blocked in restricted_real_motion mode."
+            )
+
+        if step.skill_id == "close_gripper" and self._is_contact_close_step(step):
+            reasons.append(
+                "close_gripper during contact or on an object is blocked in restricted_real_motion mode."
+            )
+
+        if step.skill_id == "move_to_pregrasp":
+            self._verify_restricted_move_to_pregrasp_context(step, context, reasons)
+
+    def _verify_restricted_move_to_pregrasp_context(
+        self,
+        step,
+        context: Dict[str, Any],
+        reasons: list[str],
+    ) -> None:
+        grasp_plan = context.get("grasp_plan") or context.get("selected_grasp_plan")
+        pregrasp_pose = self._pregrasp_pose_from_plan(grasp_plan)
+        if pregrasp_pose is None:
+            reasons.append("move_to_pregrasp requires a valid GraspPlan.")
+            return
+
+        frame = self._pose_frame(pregrasp_pose)
+        if frame != "base_link":
+            reasons.append("move_to_pregrasp requires pregrasp_pose.frame == base_link.")
+
+        summary = (
+            context.get("pregrasp_motion_summary")
+            or context.get("trajectory_summary")
+            or context.get("motion_summary")
+        )
+        if not isinstance(summary, dict):
+            reasons.append("move_to_pregrasp requires a validated trajectory summary.")
+        else:
+            config = context.get("real_arm_safety")
+            if config is None:
+                try:
+                    config = load_real_arm_safety()
+                except Exception as exc:
+                    reasons.append(f"Cannot load real_arm_safety.yaml: {exc}")
+                    config = None
+            if config is not None:
+                try:
+                    validation = validate_motion_summary(summary, config)
+                except ValueError as exc:
+                    reasons.append(f"Invalid trajectory summary: {exc}")
+                else:
+                    if not validation.get("allowed", False):
+                        reasons.append(str(validation.get("reason", "Trajectory summary rejected.")))
+
+        if context.get("arm_confirmation_required") is False:
+            reasons.append("move_to_pregrasp requires EXECUTE confirmation at execution time.")
+
+    @staticmethod
+    def _pregrasp_pose_from_plan(grasp_plan):
+        if grasp_plan is None:
+            return None
+        if isinstance(grasp_plan, dict):
+            return (
+                grasp_plan.get("pregrasp_pose")
+                or grasp_plan.get("pregrasp")
+                or grasp_plan.get("pose")
+            )
+        return (
+            getattr(grasp_plan, "pregrasp_pose", None)
+            or getattr(grasp_plan, "pregrasp", None)
+            or getattr(grasp_plan, "pose", None)
+        )
+
+    @staticmethod
+    def _pose_frame(pose) -> str | None:
+        if isinstance(pose, dict):
+            return pose.get("frame") or pose.get("frame_id")
+        return getattr(pose, "frame", None) or getattr(pose, "frame_id", None)
+
+    @staticmethod
+    def _is_contact_close_step(step) -> bool:
+        if step.parameters.get("during_contact") is True:
+            return True
+        if step.parameters.get("on_object") is True:
+            return True
+        text = f"{step.description} {step.parameters}".lower()
+        return "during_contact" in text or "contact" in text or "on object" in text
 
     @staticmethod
     def _hardware_mode_from_context(context: Dict[str, Any]) -> HardwareMode | None:
