@@ -562,6 +562,20 @@ ros2 run llm_skill_robot ros-graspgenx-pregrasp-real-demo
 
 The demo asks for an object query, optionally opens the real gripper only if you type the exact response `YES`, plans to the selected pregrasp pose, prints the trajectory summary, and moves the real UR5 only if you type the exact phrase `EXECUTE`. It stops immediately after the pregrasp motion and prints `No approach, contact, close, or lift was executed.`
 
+## Real UR5 Pregrasp + Candidate Width Test
+
+After the pregrasp-only demo is stable, use this test to combine one restricted pregrasp motion with explicit real-gripper commands:
+
+```bash
+cd ~/dev_ws
+source /opt/ros/humble/setup.zsh
+colcon build --packages-select llm_skill_robot --symlink-install
+source install/setup.zsh
+ros2 run llm_skill_robot ros-pregrasp-gripper-real-test
+```
+
+The test detects an object, selects a GraspGenX candidate, prints its `candidate_id`, score, `gripper_width_m`, and pose, then asks separately before each real action. Type `YES` to open the real gripper, type `EXECUTE` to move the real UR5 to pregrasp, and type `YES` again to set the gripper to the selected candidate width. Missing widths, widths outside `hardware_mode.yaml` limits, or widths below `safe_close_width_m` are rejected. The test never calls `approach_grasp`, never closes on the object, never lifts, and never executes `pick_object`.
+
 ## ROS Verification Demo
 
 Read the current UR5 joint state and verify a hardcoded plan without moving the robot:
