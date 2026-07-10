@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 import pprint
 import sys
 from typing import Any
@@ -102,6 +103,7 @@ class RestrictedRealHardwareDemoController:
         self.gripper_backend = gripper_backend
         self.grasping_config = grasping_config or {}
         self.gripper_config = gripper_config or {}
+        self.transformer = transformer
         self.audit_logger = audit_logger
         self.state = RestrictedRealDemoState()
         self.pregrasp_controller = PregraspRealDemoController(
@@ -182,27 +184,42 @@ class RestrictedRealHardwareDemoController:
         width_screened = self._candidate_width_commands(self.state.candidates)
         if not width_screened:
             return self._blocked("No candidate has a safe usable gripper_width_m.")
-        selection = self.pregrasp_controller.select_restricted_pregrasp_plan(
-            [item["candidate"] for item in width_screened],
-            self.state.point_cloud,
-        )
+        preferred = self._apply_grasp_preferences(width_screened)
+        if not preferred:
+            return self._blocked("No candidate satisfies the configured grasp preferences.")
+        selection = None
+        selected_preferred_item = None
+        for item in preferred:
+            selection = self.pregrasp_controller.select_restricted_pregrasp_plan(
+                [item["candidate"]],
+                self.state.point_cloud,
+            )
+            if selection is not None:
+                selected_preferred_item = item
+                break
         if selection is None:
             return self._blocked("No candidate produced a safe reachable pregrasp.")
-        width_command = next(
-            item["command"]
-            for item in width_screened
-            if item["candidate"] is selection.candidate
-        )
+        width_command = selected_preferred_item["command"]
         self.state.selected_grasp_plan = selection
         self.state.last_planned_trajectory = selection.plan
         self.state.candidate_width_command = width_command
         print_selected_candidate(selection.candidate)
+        preference = grasp_preference_score(
+            selection.candidate,
+            self._grasp_preference_config(),
+        )
+        print("\nGrasp preference diagnostics:")
+        print(f"score: {preference.get('score')}")
+        print(f"reason: {preference.get('reason')}")
+        print("object planar_principal_axes:")
+        pprint.pprint((self.state.point_cloud or {}).get("planar_principal_axes"), sort_dicts=False)
         print_motion_summary(selection.plan.summary)
         self._audit(
             "restricted_real_hw_grasp_candidate_reviewed",
             selected_candidate_id=_candidate_value(selection.candidate, "candidate_id", "unknown"),
             selected_variant=selection.variant,
             plan_id=selection.plan.plan_id,
+            grasp_preference_score=preference.get("score"),
         )
         return DemoActionResult(
             True,
@@ -381,6 +398,84 @@ class RestrictedRealHardwareDemoController:
             usable.append({"candidate": candidate, "command": command})
         return usable
 
+    def _apply_grasp_preferences(
+        self,
+        width_screened: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        config = self._grasp_preference_config()
+        scored = []
+        rejected = []
+        for item in width_screened:
+            preference = grasp_preference_score(item["candidate"], config)
+            if not preference["allowed"]:
+                rejected.append(
+                    {
+                        "candidate_id": _candidate_value(
+                            item["candidate"], "candidate_id", "unknown"
+                        ),
+                        "reason": preference["reason"],
+                    }
+                )
+                continue
+            scored.append({**item, "preference": preference})
+        if rejected:
+            self._audit(
+                "restricted_real_hw_grasp_preference_rejected",
+                rejected=rejected,
+            )
+        scored.sort(
+            key=lambda item: (
+                -float(item["preference"].get("score", 0.0)),
+                -float(_candidate_value(item["candidate"], "score", 0.0) or 0.0),
+            )
+        )
+        self._audit(
+            "restricted_real_hw_grasp_preferences_applied",
+            accepted_count=len(scored),
+            rejected_count=len(rejected),
+            ranked_candidate_ids=[
+                _candidate_value(item["candidate"], "candidate_id", "unknown")
+                for item in scored
+            ],
+        )
+        return scored
+
+    def _grasp_preference_config(self) -> dict[str, Any]:
+        preview_config = self.grasping_config.get("plan_only_preview", {}) or {}
+        screening_config = preview_config.get("candidate_screening", {}) or {}
+        config = dict(screening_config.get("grasp_preferences", {}) or {})
+        point_cloud_axes = (self.state.point_cloud or {}).get("planar_principal_axes")
+        if point_cloud_axes and "face_reference_axes" not in config:
+            config["face_reference_axes"] = point_cloud_axes
+        current_axis = self._current_gripper_closing_axis(config)
+        if current_axis is not None and "current_gripper_closing_axis" not in config:
+            config["current_gripper_closing_axis"] = current_axis
+        return config
+
+    def _current_gripper_closing_axis(self, config: dict[str, Any]) -> list[float] | None:
+        configured_axis = config.get("current_gripper_closing_axis")
+        if configured_axis is not None:
+            return _vector_from_value(configured_axis)
+        frame_name = str(config.get("current_gripper_frame") or "").strip()
+        if not frame_name or self.transformer is None:
+            return None
+        lookup = getattr(self.transformer, "_lookup_transform", None)
+        if not callable(lookup):
+            return None
+        transform = lookup(frame_name, timeout_sec=0.2)
+        if transform is None:
+            return None
+        rotation = transform.transform.rotation
+        axis = _vector_from_value(config.get("current_gripper_axis", [0.0, 0.0, 1.0]))
+        if axis is None:
+            return None
+        return list(
+            _rotate_vector_by_quaternion(
+                axis,
+                (rotation.x, rotation.y, rotation.z, rotation.w),
+            )
+        )
+
     def _execute_plan_with_confirmation(
         self,
         plan: LastMotionPlan | None,
@@ -486,6 +581,281 @@ class RestrictedRealHardwareDemoController:
     def _audit(self, event: str, **fields: Any) -> None:
         if self.audit_logger is not None:
             self.audit_logger.log_hardware_safety_event(event, **fields)
+
+
+def grasp_preference_score(candidate: Any, config: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Score tabletop grasp preferences without changing the hardware safety gate."""
+    config = config or {}
+    if not config.get("enabled", True):
+        return {"allowed": True, "score": 0.0, "reason": "Grasp preferences disabled."}
+
+    score = 0.0
+    reasons = []
+    if config.get("prefer_top_down", True):
+        max_tilt_deg = float(config.get("max_tilt_deg", 30.0))
+        top_down = _top_down_score(candidate, max_tilt_deg)
+        if not top_down["allowed"]:
+            return top_down
+        score += float(config.get("top_down_weight", 1.0)) * top_down["score"]
+        reasons.append(top_down["reason"])
+
+    if config.get("prefer_face_aligned_yaw", True):
+        max_deviation_deg = float(config.get("max_face_yaw_deviation_deg", 25.0))
+        face = _face_alignment_score(
+            candidate,
+            max_deviation_deg,
+            reference_axes=config.get("face_reference_axes"),
+        )
+        if not face["allowed"]:
+            return face
+        score += float(config.get("face_alignment_weight", 1.0)) * face["score"]
+        reasons.append(face["reason"])
+
+    if config.get("prefer_current_gripper_yaw", False):
+        current = _current_gripper_yaw_score(
+            candidate,
+            config.get("current_gripper_closing_axis"),
+            float(config.get("max_preferred_yaw_change_deg", 90.0)),
+        )
+        if not current["allowed"]:
+            return current
+        score += float(config.get("current_yaw_weight", 1.0)) * current["score"]
+        reasons.append(current["reason"])
+
+    return {
+        "allowed": True,
+        "score": score,
+        "reason": "; ".join(reasons) if reasons else "Candidate satisfies grasp preferences.",
+    }
+
+
+def _current_gripper_yaw_score(
+    candidate: Any,
+    current_axis: Any | None,
+    max_preferred_yaw_change_deg: float,
+) -> dict[str, Any]:
+    if current_axis is None:
+        return {
+            "allowed": True,
+            "score": 0.0,
+            "reason": "No current gripper closing axis available.",
+        }
+    candidate_axis = _candidate_vector(
+        candidate,
+        ("closing_axis_base", "closing_axis", "width_axis", "gripper_width_axis"),
+    )
+    if candidate_axis is None:
+        candidate_axis = _yaw_axis_from_candidate_pose(candidate)
+    candidate_xy = _normalize_vector([
+        *(candidate_axis or [0.0, 0.0, 0.0])[:2],
+        0.0,
+    ])
+    current = _vector_from_value(current_axis)
+    current_xy = (
+        _normalize_vector([current[0], current[1], 0.0])
+        if current is not None
+        else None
+    )
+    if candidate_xy is None or current_xy is None:
+        return {
+            "allowed": True,
+            "score": 0.0,
+            "reason": "Current yaw preference could not compare planar axes.",
+        }
+    dot = abs(candidate_xy[0] * current_xy[0] + candidate_xy[1] * current_xy[1])
+    yaw_change_deg = math.degrees(math.acos(_clamp(dot, -1.0, 1.0)))
+    max_yaw = max(float(max_preferred_yaw_change_deg), 1e-6)
+    return {
+        "allowed": True,
+        "score": max(0.0, 1.0 - yaw_change_deg / max_yaw),
+        "reason": f"current gripper yaw change {yaw_change_deg:.1f} deg.",
+    }
+
+
+def _top_down_score(candidate: Any, max_tilt_deg: float) -> dict[str, Any]:
+    vector = _candidate_vector(
+        candidate,
+        ("approach_vector_base", "approach_vector", "grasp_approach_axis"),
+    )
+    if vector is None:
+        return {"allowed": True, "score": 0.0, "reason": "No approach vector available."}
+    normalized = _normalize_vector(vector)
+    if normalized is None:
+        return {"allowed": False, "score": 0.0, "reason": "Invalid approach vector."}
+    vertical_alignment = abs(normalized[2])
+    tilt_deg = math.degrees(math.acos(_clamp(vertical_alignment, -1.0, 1.0)))
+    if tilt_deg > max_tilt_deg:
+        return {
+            "allowed": False,
+            "score": 0.0,
+            "reason": f"top_down tilt {tilt_deg:.1f} deg exceeds {max_tilt_deg:.1f} deg.",
+        }
+    return {
+        "allowed": True,
+        "score": 1.0 - tilt_deg / max(max_tilt_deg, 1e-6),
+        "reason": f"top_down tilt {tilt_deg:.1f} deg.",
+    }
+
+
+def _face_alignment_score(
+    candidate: Any,
+    max_deviation_deg: float,
+    reference_axes: Any | None = None,
+) -> dict[str, Any]:
+    axis = _candidate_vector(
+        candidate,
+        ("closing_axis_base", "closing_axis", "width_axis", "gripper_width_axis"),
+    )
+    if axis is None:
+        axis = _yaw_axis_from_candidate_pose(candidate)
+    if axis is None:
+        return {"allowed": True, "score": 0.0, "reason": "No closing/yaw axis available."}
+    normalized = _normalize_vector(axis)
+    if normalized is None:
+        return {"allowed": False, "score": 0.0, "reason": "Invalid closing/yaw axis."}
+    xy_norm = math.hypot(normalized[0], normalized[1])
+    if xy_norm < 1e-6:
+        return {"allowed": True, "score": 0.0, "reason": "Closing/yaw axis is vertical."}
+    deviation = _axis_deviation_from_reference_axes(normalized, reference_axes)
+    if deviation > max_deviation_deg:
+        return {
+            "allowed": False,
+            "score": 0.0,
+            "reason": (
+                f"face yaw deviation {deviation:.1f} deg exceeds "
+                f"{max_deviation_deg:.1f} deg."
+            ),
+        }
+    return {
+        "allowed": True,
+        "score": 1.0 - deviation / max(max_deviation_deg, 1e-6),
+        "reason": f"face yaw deviation {deviation:.1f} deg.",
+    }
+
+
+def _candidate_vector(candidate: Any, names: tuple[str, ...]) -> list[float] | None:
+    for name in names:
+        value = _candidate_value(candidate, name)
+        if value is None:
+            continue
+        if isinstance(value, dict):
+            try:
+                return [float(value[axis]) for axis in ("x", "y", "z")]
+            except (KeyError, TypeError, ValueError):
+                return None
+        try:
+            values = list(value)
+        except TypeError:
+            return None
+        if len(values) >= 3:
+            try:
+                return [float(values[0]), float(values[1]), float(values[2])]
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _yaw_axis_from_candidate_pose(candidate: Any) -> list[float] | None:
+    pose = _candidate_value(candidate, "pose")
+    if not isinstance(pose, dict):
+        return None
+    orientation = pose.get("orientation")
+    if not isinstance(orientation, dict):
+        return None
+    try:
+        x = float(orientation.get("x", 0.0))
+        y = float(orientation.get("y", 0.0))
+        z = float(orientation.get("z", 0.0))
+        w = float(orientation.get("w", 1.0))
+    except (TypeError, ValueError):
+        return None
+    # Rotate local X by the quaternion; this is enough to penalize diagonal yaw.
+    return [
+        1.0 - 2.0 * (y * y + z * z),
+        2.0 * (x * y + z * w),
+        2.0 * (x * z - y * w),
+    ]
+
+
+def _axis_deviation_from_orthogonal_faces(angle_deg: float) -> float:
+    wrapped = abs(((angle_deg + 45.0) % 90.0) - 45.0)
+    return wrapped
+
+
+def _axis_deviation_from_reference_axes(
+    axis: list[float],
+    reference_axes: Any | None = None,
+) -> float:
+    if not reference_axes:
+        angle_deg = math.degrees(math.atan2(axis[1], axis[0]))
+        return _axis_deviation_from_orthogonal_faces(angle_deg)
+    deviations = []
+    for reference in reference_axes:
+        ref = _vector_from_value(reference)
+        if ref is None:
+            continue
+        ref_norm = _normalize_vector(ref)
+        if ref_norm is None:
+            continue
+        axis_xy = _normalize_vector([axis[0], axis[1], 0.0])
+        ref_xy = _normalize_vector([ref_norm[0], ref_norm[1], 0.0])
+        if axis_xy is None or ref_xy is None:
+            continue
+        dot = abs(axis_xy[0] * ref_xy[0] + axis_xy[1] * ref_xy[1])
+        deviations.append(math.degrees(math.acos(_clamp(dot, -1.0, 1.0))))
+    if not deviations:
+        angle_deg = math.degrees(math.atan2(axis[1], axis[0]))
+        return _axis_deviation_from_orthogonal_faces(angle_deg)
+    return min(deviations)
+
+
+def _vector_from_value(value: Any) -> list[float] | None:
+    if isinstance(value, dict):
+        try:
+            return [float(value[axis]) for axis in ("x", "y", "z")]
+        except (KeyError, TypeError, ValueError):
+            return None
+    try:
+        values = list(value)
+    except TypeError:
+        return None
+    if len(values) < 3:
+        return None
+    try:
+        return [float(values[0]), float(values[1]), float(values[2])]
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_vector(vector: list[float]) -> list[float] | None:
+    norm = math.sqrt(sum(float(item) * float(item) for item in vector[:3]))
+    if norm <= 1e-9:
+        return None
+    return [float(item) / norm for item in vector[:3]]
+
+
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
+
+
+def _rotate_vector_by_quaternion(
+    vector: list[float],
+    quaternion: tuple[float, float, float, float],
+) -> tuple[float, float, float]:
+    qx, qy, qz, qw = quaternion
+    norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+    if norm <= 1e-9:
+        return float(vector[0]), float(vector[1]), float(vector[2])
+    qx, qy, qz, qw = qx / norm, qy / norm, qz / norm, qw / norm
+    vx, vy, vz = float(vector[0]), float(vector[1]), float(vector[2])
+    tx = 2.0 * (qy * vz - qz * vy)
+    ty = 2.0 * (qz * vx - qx * vz)
+    tz = 2.0 * (qx * vy - qy * vx)
+    return (
+        vx + qw * tx + (qy * tz - qz * ty),
+        vy + qw * ty + (qz * tx - qx * tz),
+        vz + qw * tz + (qx * ty - qy * tx),
+    )
 
 
 def print_full_safety_summary(hardware_mode, real_arm_safety, gripper_config: dict) -> None:

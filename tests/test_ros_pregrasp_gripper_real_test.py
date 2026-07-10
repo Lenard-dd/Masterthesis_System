@@ -200,6 +200,16 @@ def test_no_close_gripper_call():
     assert gripper.close_calls == []
 
 
+def test_selected_candidate_prints_axes(capsys):
+    from llm_skill_robot.ros_pregrasp_gripper_real_test import print_selected_candidate
+
+    print_selected_candidate(_candidate())
+
+    output = capsys.readouterr().out
+    assert "approach_vector:" in output
+    assert "closing_axis:" in output
+
+
 def test_no_approach_grasp_call():
     controller, moveit, _gripper = _controller()
 

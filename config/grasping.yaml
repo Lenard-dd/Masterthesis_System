@@ -28,7 +28,7 @@ grasping:
     require_server_confirmation: true
 
   plan_only_preview:
-    pregrasp_distance_m: 0.10
+    pregrasp_distance_m: 0.12
     retreat_distance_m: 0.10
     # Interpret retreat_vector after TF and tool0 conversion, in the final
     # MoveIt target frame. With target_frame=base_link, [0, 0, 1] means lift up
@@ -60,12 +60,28 @@ grasping:
     # candidates that create complex RViz paths or fail validation.
     candidate_screening:
       enabled: true
-      max_candidates: 12
+      max_candidates: 20
       variants: [full_pose, relaxed_orientation, position_only]
       position_tolerance_m: 0.01
       full_orientation_tolerance_rad: 0.05
       relaxed_orientation_tolerance_rad: 0.75
       allow_position_only_fallback: true
+      grasp_preferences:
+        enabled: true
+        prefer_top_down: true
+        max_tilt_deg: 30.0
+        top_down_weight: 1.0
+        prefer_face_aligned_yaw: true
+        max_face_yaw_deviation_deg: 25.0
+        face_alignment_weight: 1.0
+        prefer_current_gripper_yaw: true
+        current_yaw_weight: 1.5
+        max_preferred_yaw_change_deg: 90.0
+        # Optional TF source for the current real gripper closing direction.
+        # Set current_gripper_frame to the finger frame whose blue/Z axis is
+        # the Robotiq closing axis. Leave empty to skip TF-based yaw preference.
+        current_gripper_frame: "left_inner_finger"
+        current_gripper_axis: [0.0, 0.0, 1.0]
     # GraspGenX reports a grasp / Robotiq gripper frame. MoveIt plans for the
     # UR5 end-effector frame configured in config/ur5.yaml, normally tool0.
     #

@@ -85,6 +85,8 @@ def test_make_candidates_converts_grasps_and_scores():
     assert candidates[0]["pose"]["position"] == pytest.approx(
         {"x": 0.1, "y": 0.2, "z": 0.3}
     )
+    assert candidates[0]["approach_vector"] == pytest.approx([0.0, 0.0, 1.0])
+    assert candidates[0]["closing_axis"] == pytest.approx([0.0, 1.0, 0.0])
     assert "gripper_width_m" not in candidates[0]
 
 

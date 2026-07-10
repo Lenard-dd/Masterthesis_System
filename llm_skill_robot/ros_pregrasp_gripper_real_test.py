@@ -334,6 +334,10 @@ def print_selected_candidate(candidate: Any) -> None:
     print(f"candidate_id: {_candidate_value(candidate, 'candidate_id', _candidate_value(candidate, 'id'))}")
     print(f"score: {_candidate_value(candidate, 'score')}")
     print(f"gripper_width_m: {_candidate_value(candidate, 'gripper_width_m')}")
+    print(f"approach_vector: {_candidate_value(candidate, 'approach_vector')}")
+    print(f"closing_axis: {_candidate_value(candidate, 'closing_axis')}")
+    print(f"width_axis: {_candidate_value(candidate, 'width_axis')}")
+    print(f"gripper_width_axis: {_candidate_value(candidate, 'gripper_width_axis')}")
     print("pose:")
     pprint.pprint(_candidate_value(candidate, "pose"), sort_dicts=False)
 

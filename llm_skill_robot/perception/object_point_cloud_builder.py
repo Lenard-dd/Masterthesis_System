@@ -75,6 +75,7 @@ class ObjectPointCloudBuilder:
             y = (rows - cy) * z / fy
             points = np.column_stack((x, y, z))
             centroid = points.mean(axis=0)
+            planar_axes = self._planar_principal_axes(points)
 
             output_dir = Path(str(self.config["output_dir"]))
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -95,6 +96,7 @@ class ObjectPointCloudBuilder:
                 "y": float(centroid[1]),
                 "z": float(centroid[2]),
             },
+            "planar_principal_axes": planar_axes,
         }
 
     @staticmethod
@@ -132,6 +134,36 @@ class ObjectPointCloudBuilder:
             handle.write("property float x\nproperty float y\nproperty float z\nend_header\n")
             for x, y, z in points:
                 handle.write(f"{float(x):.8f} {float(y):.8f} {float(z):.8f}\n")
+
+    @staticmethod
+    def _planar_principal_axes(points) -> list[dict[str, float]]:
+        try:
+            import numpy as np
+
+            xy = np.asarray(points, dtype=float)[:, :2]
+            if xy.shape[0] < 2:
+                return []
+            centered = xy - xy.mean(axis=0)
+            covariance = np.cov(centered, rowvar=False)
+            values, vectors = np.linalg.eigh(covariance)
+            order = np.argsort(values)[::-1]
+            axes = []
+            for index in order[:2]:
+                vector = vectors[:, index]
+                norm = float(np.linalg.norm(vector))
+                if norm <= 1e-9:
+                    continue
+                vector = vector / norm
+                axes.append(
+                    {
+                        "x": float(vector[0]),
+                        "y": float(vector[1]),
+                        "z": 0.0,
+                    }
+                )
+            return axes
+        except Exception:
+            return []
 
     @staticmethod
     def _value(value: Any, name: str, default: Any = None) -> Any:

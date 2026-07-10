@@ -226,6 +226,9 @@ def make_candidates(
     for index in range(count):
         matrix = grasp_array[index].astype(float).tolist()
         score = float(score_array[index])
+        rotation = np.asarray(matrix, dtype=float)[:3, :3]
+        approach_vector = rotation[:, 2].astype(float).tolist()
+        closing_axis = rotation[:, int(width_axis_index)].astype(float).tolist()
         candidate = {
             "candidate_id": f"graspgenx_{index + 1}",
             "valid": math.isfinite(score),
@@ -233,6 +236,8 @@ def make_candidates(
             "pose_frame": "object_point_cloud",
             "transform": matrix,
             "pose": matrix_to_pose(matrix, frame="object_point_cloud"),
+            "approach_vector": approach_vector,
+            "closing_axis": closing_axis,
             "metadata": {"source": "graspgenx_zmq", "gripper_name": gripper_name},
         }
         if default_gripper_width_m is not None:

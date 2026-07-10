@@ -33,6 +33,7 @@ def test_numpy_camera_info_intrinsics_build_point_cloud(tmp_path):
     assert result["num_points"] == 4
     assert result["point_cloud_path"].endswith("red_cube_1.ply")
     assert result["centroid_m"] == {"x": -0.005, "y": -0.005, "z": 1.0}
+    assert len(result["planar_principal_axes"]) == 2
 
 
 def test_namespace_numpy_camera_info_intrinsics_build_point_cloud(tmp_path):
