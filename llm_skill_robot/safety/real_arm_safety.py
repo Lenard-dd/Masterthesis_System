@@ -14,6 +14,9 @@ from llm_skill_robot.utils import get_config_dir
 @dataclass(frozen=True)
 class RealArmLimits:
     max_cartesian_step_m: float
+    max_approach_distance_m: float
+    max_retreat_distance_m: float
+    max_lift_distance_m: float
     max_joint_delta_rad: float
     max_total_joint_delta_rad: float
     max_velocity_scale: float
@@ -31,6 +34,7 @@ class RealArmSafetyConfig:
     allowed_real_motion_skills: tuple[str, ...]
     blocked_real_motion_skills: tuple[str, ...]
     allowed_named_targets: tuple[str, ...]
+    grasp: dict[str, Any]
     gripper: dict[str, Any]
 
 
@@ -60,6 +64,7 @@ def load_real_arm_safety(path: str | None = None) -> RealArmSafetyConfig:
             allowed_real_motion_skills=tuple(data["allowed_real_motion_skills"]),
             blocked_real_motion_skills=tuple(data["blocked_real_motion_skills"]),
             allowed_named_targets=tuple(data["allowed_named_targets"]),
+            grasp=dict(data["grasp"]),
             gripper=dict(data["gripper"]),
         )
     except (KeyError, TypeError) as exc:
@@ -93,13 +98,13 @@ def is_real_motion_skill_allowed(
     """Return whether a skill may request restricted real-arm motion."""
     if not config.enabled:
         return _blocked("Real arm safety is disabled.")
-    if config.execution_mode != "restricted_real_motion":
-        return _blocked("Real arm safety execution_mode must be restricted_real_motion.")
+    if config.execution_mode not in _SUPPORTED_EXECUTION_MODES:
+        return _blocked("Real arm safety execution_mode is not supported.")
     if skill_id in config.blocked_real_motion_skills:
-        return _blocked(f"{skill_id} is blocked for restricted real-arm motion.")
+        return _blocked(f"{skill_id} is blocked for real-arm motion.")
     if skill_id not in config.allowed_real_motion_skills:
-        return _blocked(f"{skill_id} is not allowed for restricted real-arm motion.")
-    return _allowed(f"{skill_id} is allowed for restricted real-arm motion.")
+        return _blocked(f"{skill_id} is not allowed for real-arm motion.")
+    return _allowed(f"{skill_id} is allowed for real-arm motion.")
 
 
 def validate_named_target(
@@ -144,6 +149,125 @@ def validate_motion_summary(
     return _allowed("Motion summary satisfies restricted real-arm limits.")
 
 
+def validate_approach_distance(
+    distance_m: Any,
+    config: RealArmSafetyConfig,
+) -> dict[str, Any]:
+    """Validate the final Cartesian approach distance for a real grasp."""
+    return _validate_distance(
+        distance_m, config.limits.max_approach_distance_m, "approach_distance_m"
+    )
+
+
+def validate_retreat_distance(
+    distance_m: Any,
+    config: RealArmSafetyConfig,
+) -> dict[str, Any]:
+    """Validate the retreat distance after a real grasp."""
+    return _validate_distance(
+        distance_m, config.limits.max_retreat_distance_m, "retreat_distance_m"
+    )
+
+
+def validate_lift_distance(
+    distance_m: Any,
+    config: RealArmSafetyConfig,
+) -> dict[str, Any]:
+    """Validate the supervised post-contact lift distance."""
+    return _validate_distance(
+        distance_m, config.limits.max_lift_distance_m, "lift_distance_m"
+    )
+
+
+def validate_grasp_score(score: Any, config: RealArmSafetyConfig) -> dict[str, Any]:
+    """Validate that a selected grasp meets the configured quality threshold."""
+    if not config.grasp.get("require_min_grasp_score", False):
+        return _allowed("Minimum grasp-score validation is disabled.")
+    numeric_score = _finite_float(score, "grasp_score")
+    minimum = _finite_float(config.grasp.get("min_grasp_score"), "min_grasp_score")
+    if numeric_score < minimum:
+        return _blocked(f"grasp_score {numeric_score} is below minimum {minimum}.")
+    return _allowed(f"grasp_score {numeric_score} meets minimum {minimum}.")
+
+
+def validate_contact_close_allowed(config: RealArmSafetyConfig) -> dict[str, Any]:
+    """Allow object-contact closing only when both grasp and gripper gates allow it."""
+    if config.execution_mode != "full_grasp_supervised":
+        return _blocked("Contact close requires full_grasp_supervised mode.")
+    if not config.grasp.get("allow_contact_close", False):
+        return _blocked("Contact close is disabled by grasp safety configuration.")
+    if not config.gripper.get("allow_real_gripper_during_grasp", False):
+        return _blocked("Real gripper use during grasp is disabled.")
+    if not config.gripper.get("allow_close_gripper", False):
+        return _blocked("Gripper close is disabled by safety configuration.")
+    if not config.gripper.get("contact_close_requires_confirmation", False):
+        return _blocked("Contact close must require explicit confirmation.")
+    return _allowed("Contact close is allowed with its required per-step confirmation.")
+
+
+def validate_full_grasp_step(
+    skill_id: str,
+    summary: dict[str, Any],
+    config: RealArmSafetyConfig,
+) -> dict[str, Any]:
+    """Validate one supervised grasp step; never authorize a whole pick sequence.
+
+    This is deliberately step-scoped.  The executor must still collect the
+    configured confirmation immediately before executing the individual step.
+    """
+    if config.execution_mode != "full_grasp_supervised":
+        return _blocked("Full grasp steps require full_grasp_supervised mode.")
+    if not isinstance(summary, dict):
+        raise ValueError("Full grasp step summary must be a mapping.")
+
+    if skill_id in config.blocked_real_motion_skills:
+        return _blocked(f"{skill_id} is blocked for full supervised grasp.")
+    if skill_id in {"pick_object", "execute_pick_sequence"}:
+        return _blocked(f"{skill_id} is not permitted; execute only individual grasp steps.")
+
+    if skill_id == "close_gripper":
+        result = validate_contact_close_allowed(config)
+    else:
+        result = is_real_motion_skill_allowed(skill_id, config)
+    if not result["allowed"]:
+        return result
+
+    distance = summary.get("distance_m")
+    if skill_id == "approach_grasp":
+        if distance is None:
+            return _blocked("approach_grasp requires distance_m.")
+        result = validate_approach_distance(distance, config)
+    elif skill_id == "retreat_grasp":
+        if distance is None:
+            return _blocked("retreat_grasp requires distance_m.")
+        result = validate_retreat_distance(distance, config)
+    elif skill_id == "lift_object":
+        if not config.grasp.get("allow_lift_after_close", False):
+            return _blocked("Lift after close is disabled by grasp safety configuration.")
+        if distance is None:
+            return _blocked("lift_object requires distance_m.")
+        result = validate_lift_distance(distance, config)
+    if not result["allowed"]:
+        return result
+
+    if "grasp_score" in summary:
+        result = validate_grasp_score(summary["grasp_score"], config)
+        if not result["allowed"]:
+            return result
+
+    return {
+        "allowed": True,
+        "reason": f"{skill_id} satisfies full supervised grasp limits.",
+        "requires_confirmation": config.require_human_confirmation_each_motion
+        or config.grasp.get("require_final_confirmation_each_step", False),
+        "confirmation_phrase": (
+            config.gripper["confirmation_phrase"]
+            if skill_id == "close_gripper"
+            else config.confirmation_phrase
+        ),
+    }
+
+
 def require_execute_confirmation(
     prompt_text: str,
     confirmation_phrase: str = "EXECUTE",
@@ -152,9 +276,15 @@ def require_execute_confirmation(
     return prompt_text == confirmation_phrase
 
 
+_SUPPORTED_EXECUTION_MODES = frozenset({"restricted_real_motion", "full_grasp_supervised"})
+
+
 def _validate_config(config: RealArmSafetyConfig) -> None:
-    if config.execution_mode != "restricted_real_motion":
-        raise ValueError("real_arm_safety.execution_mode must be restricted_real_motion.")
+    if config.execution_mode not in _SUPPORTED_EXECUTION_MODES:
+        raise ValueError(
+            "real_arm_safety.execution_mode must be restricted_real_motion or "
+            "full_grasp_supervised."
+        )
     if not config.confirmation_phrase:
         raise ValueError("confirmation_phrase must not be empty.")
     if set(config.allowed_real_motion_skills).intersection(config.blocked_real_motion_skills):
@@ -163,6 +293,9 @@ def _validate_config(config: RealArmSafetyConfig) -> None:
     limits = config.limits
     positive_limits = {
         "max_cartesian_step_m": limits.max_cartesian_step_m,
+        "max_approach_distance_m": limits.max_approach_distance_m,
+        "max_retreat_distance_m": limits.max_retreat_distance_m,
+        "max_lift_distance_m": limits.max_lift_distance_m,
         "max_joint_delta_rad": limits.max_joint_delta_rad,
         "max_total_joint_delta_rad": limits.max_total_joint_delta_rad,
         "max_velocity_scale": limits.max_velocity_scale,
@@ -176,6 +309,44 @@ def _validate_config(config: RealArmSafetyConfig) -> None:
 
     if not isinstance(config.gripper.get("allow_close_gripper"), bool):
         raise ValueError("gripper.allow_close_gripper must be a boolean.")
+    if not isinstance(config.grasp.get("allow_contact_close"), bool):
+        raise ValueError("grasp.allow_contact_close must be a boolean.")
+    if config.execution_mode == "full_grasp_supervised":
+        required_grasp_flags = (
+            "require_detected_object",
+            "require_base_link_pose",
+            "require_grasp_plan",
+            "require_min_grasp_score",
+            "require_trajectory_review",
+            "require_final_confirmation_each_step",
+            "allow_contact_close",
+            "allow_lift_after_close",
+        )
+        for name in required_grasp_flags:
+            if not isinstance(config.grasp.get(name), bool):
+                raise ValueError(f"grasp.{name} must be a boolean.")
+        _finite_float(config.grasp.get("min_grasp_score"), "min_grasp_score")
+        if not config.require_human_confirmation_each_motion:
+            raise ValueError(
+                "full_grasp_supervised requires confirmation for each real motion."
+            )
+        if not config.grasp["require_final_confirmation_each_step"]:
+            raise ValueError(
+                "full_grasp_supervised requires final confirmation for every step."
+            )
+        if not isinstance(config.gripper.get("contact_close_requires_confirmation"), bool):
+            raise ValueError("gripper.contact_close_requires_confirmation must be a boolean.")
+        if not config.gripper.get("confirmation_phrase"):
+            raise ValueError("gripper.confirmation_phrase must not be empty.")
+
+
+def _validate_distance(distance_m: Any, limit: float, name: str) -> dict[str, Any]:
+    distance = _finite_float(distance_m, name)
+    if distance < 0:
+        return _blocked(f"{name} must be non-negative.")
+    if distance > limit:
+        return _blocked(f"{name} {distance} exceeds limit {limit}.")
+    return _allowed(f"{name} {distance} is within limit {limit}.")
 
 
 def _finite_float(value: Any, name: str) -> float:

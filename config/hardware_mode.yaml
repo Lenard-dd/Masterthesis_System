@@ -1,5 +1,5 @@
 hardware_mode:
-  mode: real_camera_real_gripper_restricted_arm
+  mode: real_full_grasp_supervised
 
   camera:
     enabled: true
@@ -18,7 +18,7 @@ hardware_mode:
   arm:
     real_arm_enabled: true
     allow_arm_execution: true
-    execution_mode: restricted_real_motion
+    execution_mode: full_grasp_supervised
     allow_moveit_execution: true
     allow_rviz_fake_execution: true
     allow_plan_only: true
@@ -27,6 +27,7 @@ hardware_mode:
   gripper:
     real_gripper_enabled: true
     allow_gripper_execution: true
+    allow_contact_close: true
     require_human_confirmation: true
     max_width_m: 0.14
     min_width_m: 0.0

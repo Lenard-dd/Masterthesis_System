@@ -260,13 +260,15 @@ def test_lift_object_is_blocked_in_restricted_mode_even_if_unknown_skill():
         ],
     )
 
-    result = verifier.verify_plan(plan)
+    result = verifier.verify_plan(
+        plan, context={"arm_execution_mode": "restricted_real_motion"}
+    )
 
     assert result.decision == VerificationDecision.BLOCK
     assert any("lift_object is blocked" in reason for reason in result.reasons)
 
 
-def test_close_gripper_during_contact_is_blocked():
+def test_close_gripper_during_contact_is_allowed_only_in_full_supervised_mode():
     verifier = PlanVerifier(SkillLibrary(), hardware_mode=load_hardware_mode())
     plan = RobotPlan(
         task="unsafe close",
@@ -288,8 +290,7 @@ def test_close_gripper_during_contact_is_blocked():
         },
     )
 
-    assert result.decision == VerificationDecision.BLOCK
-    assert any("close_gripper during contact" in reason for reason in result.reasons)
+    assert result.decision == VerificationDecision.ALLOW
 
 
 def test_move_to_pregrasp_requires_grasp_plan_in_restricted_mode():
@@ -485,7 +486,7 @@ def test_audit_records_hardware_mode(tmp_path):
     )
 
     entry = json.loads(log_file.read_text().splitlines()[0])
-    assert entry["hardware_mode"] == "real_camera_real_gripper_restricted_arm"
+    assert entry["hardware_mode"] == "real_full_grasp_supervised"
     assert entry["real_arm_execution_blocked"] is True
     assert "real_camera_used" in entry
     assert "real_gripper_command_requested" in entry

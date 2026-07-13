@@ -11,7 +11,7 @@ def test_real_arm_safety_config_loads():
     config = load_real_arm_safety()
 
     assert config.enabled is True
-    assert config.execution_mode == "restricted_real_motion"
+    assert config.execution_mode == "full_grasp_supervised"
     assert config.limits.max_cartesian_step_m > 0.0
 
 
@@ -21,15 +21,14 @@ def test_move_to_pregrasp_allowed():
     assert result["allowed"] is True
 
 
-def test_approach_grasp_blocked():
+def test_approach_grasp_allowed():
     result = is_real_motion_skill_allowed("approach_grasp", load_real_arm_safety())
 
-    assert result["allowed"] is False
-    assert "blocked" in result["reason"]
+    assert result["allowed"] is True
 
 
-def test_pick_object_blocked():
-    result = is_real_motion_skill_allowed("pick_object", load_real_arm_safety())
+def test_direct_pick_object_blocked():
+    result = is_real_motion_skill_allowed("pick_object_direct", load_real_arm_safety())
 
     assert result["allowed"] is False
     assert "blocked" in result["reason"]

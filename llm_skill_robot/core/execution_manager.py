@@ -177,6 +177,7 @@ class ExecutionManager:
         if mode is None:
             return None
         restricted_real_motion = self._restricted_real_motion_active(mode, context)
+        supervised_real_grasp = self._supervised_real_grasp_active(mode, context)
         if restricted_real_motion:
             if step.skill_id in {
                 "pick_object",
@@ -208,7 +209,7 @@ class ExecutionManager:
             execution_mode = context.get(
                 "arm_execution_mode", getattr(self.robot_backend, "execution_mode", None)
             )
-            if restricted_real_motion:
+            if supervised_real_grasp:
                 allowed_modes = (
                     {"dry_run", "plan_only", "rviz_sim", "restricted_real_motion"}
                     if step.skill_id == "move_to_named_target"
@@ -249,7 +250,7 @@ class ExecutionManager:
                         "Exact EXECUTE confirmation is required before each real arm motion.",
                     )
         if step.skill_id in self.REAL_GRIPPER_SKILLS:
-            if restricted_real_motion:
+            if supervised_real_grasp:
                 confirmed = self._per_step_confirmation(
                     context, "gripper_confirmations", step.step_id, "YES"
                 )
@@ -401,6 +402,22 @@ class ExecutionManager:
         return (
             mode.mode == "real_camera_real_gripper_restricted_arm"
             or getattr(mode.arm, "execution_mode", None) == "restricted_real_motion"
+        )
+
+    @classmethod
+    def _supervised_real_grasp_active(
+        cls,
+        mode: HardwareMode | None,
+        context: Dict[str, Any],
+    ) -> bool:
+        """Both restricted and full-supervised hardware require per-step approval."""
+        if cls._restricted_real_motion_active(mode, context):
+            return True
+        if context.get("arm_execution_mode") == "full_grasp_supervised":
+            return True
+        return mode is not None and (
+            mode.mode == "real_full_grasp_supervised"
+            or getattr(mode.arm, "execution_mode", None) == "full_grasp_supervised"
         )
 
     @staticmethod

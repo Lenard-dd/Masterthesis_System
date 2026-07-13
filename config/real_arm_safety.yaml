@@ -1,39 +1,57 @@
 real_arm_safety:
   enabled: true
-  execution_mode: restricted_real_motion
+  execution_mode: full_grasp_supervised
 
   require_human_confirmation_each_motion: true
   confirmation_phrase: EXECUTE
 
   limits:
-    max_cartesian_step_m: 0.08
-    max_joint_delta_rad: 2.10
-    max_total_joint_delta_rad: 4.0
-    max_velocity_scale: 0.05
-    max_acceleration_scale: 0.05
+    max_cartesian_step_m: 0.07
+    max_approach_distance_m: 0.06
+    max_retreat_distance_m: 0.12
+    max_lift_distance_m: 0.10
+    max_joint_delta_rad: 0.30
+    max_total_joint_delta_rad: 1.50
+    max_velocity_scale: 0.04
+    max_acceleration_scale: 0.04
     min_planning_time_sec: 2.0
 
   allowed_real_motion_skills:
     - move_to_named_target
     - move_to_pregrasp
+    - approach_grasp
     - retreat_grasp
+    - lift_object
     - move_to_safe_home
     - move_to_observe
 
   blocked_real_motion_skills:
-    - approach_grasp
-    - close_gripper_during_contact
-    - lift_object
-    - pick_object
-    - execute_pick_sequence
+    - pick_object_direct
+    - execute_pick_sequence_without_confirmation
 
   allowed_named_targets:
     - safe_home
     - observe
 
+  grasp:
+    require_detected_object: true
+    require_base_link_pose: true
+    require_grasp_plan: true
+    require_min_grasp_score: true
+    min_grasp_score: 0.60
+    require_trajectory_review: true
+    require_final_confirmation_each_step: true
+    allow_contact_close: true
+    allow_lift_after_close: true
+
   gripper:
-    allow_real_gripper_during_arm_test: true
+    allow_real_gripper_during_grasp: true
     allow_open_gripper: true
     allow_set_width: true
-    allow_close_gripper: false
-    safe_close_width_m: 0.04
+    allow_close_gripper: true
+    close_width_m: 0.0
+    safe_close_width_m: 0.02
+    max_force_N: 20.0
+    max_speed_mps: 0.03
+    contact_close_requires_confirmation: true
+    confirmation_phrase: "YES"

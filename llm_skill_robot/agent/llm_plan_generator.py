@@ -312,13 +312,15 @@ class LLMPlanGenerator(BasePlanGenerator):
         }
         for step in plan.steps:
             hardware_restricted = self._restricted_real_motion_active()
+            full_grasp_supervised = self._full_grasp_supervised_active()
             hardware_arm_safe = self.hardware_mode.mode in {
                 "real_camera_real_gripper_arm_safe",
                 "real_camera_real_gripper_restricted_arm",
+                "real_full_grasp_supervised",
             }
             blocked_ids = (
                 restricted_forbidden_skill_ids
-                if hardware_restricted
+                if hardware_restricted or full_grasp_supervised
                 else forbidden_skill_ids
             )
             if hardware_arm_safe and step.skill_id in blocked_ids:
@@ -342,7 +344,7 @@ class LLMPlanGenerator(BasePlanGenerator):
             unsafe_text = json.dumps(
                 {"description": step.description, "parameters": step.parameters}
             ).lower()
-            if hardware_restricted and step.skill_id == "close_gripper":
+            if (hardware_restricted or full_grasp_supervised) and step.skill_id == "close_gripper":
                 if any(
                     marker in unsafe_text
                     for marker in ("during_contact", "contact", "on object", "object")
@@ -367,4 +369,12 @@ class LLMPlanGenerator(BasePlanGenerator):
             self.hardware_mode.mode == "real_camera_real_gripper_restricted_arm"
             or getattr(self.hardware_mode.arm, "execution_mode", None)
             == "restricted_real_motion"
+        )
+
+    def _full_grasp_supervised_active(self) -> bool:
+        """Keep unsafe direct LLM steps blocked until the runtime state machine gates them."""
+        return (
+            self.hardware_mode.mode == "real_full_grasp_supervised"
+            or getattr(self.hardware_mode.arm, "execution_mode", None)
+            == "full_grasp_supervised"
         )

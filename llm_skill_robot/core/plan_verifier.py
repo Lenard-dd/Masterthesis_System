@@ -71,7 +71,7 @@ class PlanVerifier:
             if not skill:
                 if (
                     hardware_mode is not None
-                    and self._restricted_real_motion_active(hardware_mode)
+                    and self._restricted_real_motion_active(hardware_mode, context)
                     and step.skill_id in self.RESTRICTED_REAL_ARM_BLOCKED_SKILLS
                 ):
                     reasons.append(
@@ -160,7 +160,7 @@ class PlanVerifier:
         reasons: list[str],
         warnings: list[str],
     ) -> None:
-        restricted_real_motion = self._restricted_real_motion_active(mode)
+        restricted_real_motion = self._restricted_real_motion_active(mode, context)
         if restricted_real_motion:
             self._verify_restricted_real_motion_step(
                 step, context, reasons
@@ -240,7 +240,11 @@ class PlanVerifier:
         return context.get("gripper_confirmation") == "YES"
 
     @classmethod
-    def _restricted_real_motion_active(cls, mode: HardwareMode) -> bool:
+    def _restricted_real_motion_active(
+        cls, mode: HardwareMode, context: Dict[str, Any] | None = None
+    ) -> bool:
+        if (context or {}).get("arm_execution_mode") == "restricted_real_motion":
+            return True
         return (
             mode.mode == "real_camera_real_gripper_restricted_arm"
             or getattr(mode.arm, "execution_mode", None) == "restricted_real_motion"

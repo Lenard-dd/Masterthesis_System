@@ -27,11 +27,11 @@ def test_execution_requires_execute():
     assert validate_execute_confirmation("YES")["allowed"] is False
 
 
-def test_blocked_skill_cannot_execute():
+def test_direct_pick_skill_cannot_execute():
     plan = LastMotionPlan(
         plan_id="plan_1",
         target_name="observe",
-        skill_id="approach_grasp",
+        skill_id="pick_object_direct",
         summary={"velocity_scale": 0.01, "acceleration_scale": 0.01},
     )
 

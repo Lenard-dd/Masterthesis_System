@@ -42,6 +42,7 @@ class ArmMode:
 class GripperMode:
     real_gripper_enabled: bool
     allow_gripper_execution: bool
+    allow_contact_close: bool
     require_human_confirmation: bool
     max_width_m: float
     min_width_m: float
@@ -102,6 +103,7 @@ def _validate_mode(mode: HardwareMode) -> None:
         "arm.require_human_confirmation": mode.arm.require_human_confirmation,
         "gripper.real_gripper_enabled": mode.gripper.real_gripper_enabled,
         "gripper.allow_gripper_execution": mode.gripper.allow_gripper_execution,
+        "gripper.allow_contact_close": mode.gripper.allow_contact_close,
         "gripper.require_human_confirmation": mode.gripper.require_human_confirmation,
     }
     for name, value in boolean_fields.items():
@@ -117,9 +119,14 @@ def _validate_mode(mode: HardwareMode) -> None:
         raise ValueError("Gripper speed and force limits must be non-negative.")
     if mode.arm.allow_arm_execution and not mode.arm.real_arm_enabled:
         raise ValueError("Arm execution cannot be allowed while real_arm_enabled is false.")
-    if mode.arm.allow_arm_execution and mode.arm.execution_mode != "restricted_real_motion":
+    allowed_real_execution_modes = {"restricted_real_motion", "full_grasp_supervised"}
+    if (
+        mode.arm.allow_arm_execution
+        and mode.arm.execution_mode not in allowed_real_execution_modes
+    ):
         raise ValueError(
-            "Real arm execution may only be enabled with restricted_real_motion."
+            "Real arm execution may only be enabled with restricted_real_motion "
+            "or full_grasp_supervised."
         )
 
 
