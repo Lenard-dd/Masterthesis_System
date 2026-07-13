@@ -11,6 +11,7 @@ import yaml
 from llm_skill_robot.robot.robotiq_2f140_real_backend import Robotiq2F140RealBackend
 from llm_skill_robot.safety.hardware_mode import (
     HardwareMode,
+    assert_gripper_execution_allowed,
     clamp_or_reject_gripper_command,
     load_hardware_mode,
 )
@@ -76,7 +77,8 @@ def _print_startup_configuration(
 ) -> None:
     limits = hardware_mode.gripper
     print("REAL GRIPPER TEST MODE")
-    print("Real arm execution is DISABLED.")
+    print("This tool never sends arm plans or arm controller commands.")
+    print(f"Configured arm execution mode: {hardware_mode.arm.execution_mode}")
     print(f"max_width_m: {limits.max_width_m}")
     print(f"min_width_m: {limits.min_width_m}")
     print(f"safe_close_width_m: {limits.safe_close_width_m}")
@@ -144,6 +146,16 @@ def _send_confirmed_command(
     return backend.set_gripper_width(preview["width_m"], **common)
 
 
+def assert_real_gripper_test_allowed(mode: HardwareMode) -> None:
+    """Permit a gripper-only test even when supervised arm execution is enabled.
+
+    The CLI has no arm backend and cannot publish arm trajectories.  Requiring
+    the arm to be globally disabled prevented safe, independently confirmed
+    gripper tests in full_grasp_supervised mode.
+    """
+    assert_gripper_execution_allowed(mode)
+
+
 def main() -> None:
     try:
         import rclpy
@@ -153,16 +165,10 @@ def main() -> None:
 
     hardware_mode = load_hardware_mode()
     gripper_config = _load_gripper_config()
-    arm_disabled = (
-        not hardware_mode.arm.real_arm_enabled
-        and not hardware_mode.arm.allow_arm_execution
-    )
-    if not arm_disabled:
-        print(
-            "Error: real arm execution is not disabled in hardware_mode.yaml. "
-            "Refusing to start real gripper test.",
-            file=sys.stderr,
-        )
+    try:
+        assert_real_gripper_test_allowed(hardware_mode)
+    except PermissionError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         return
 
     _print_startup_configuration(hardware_mode, gripper_config)

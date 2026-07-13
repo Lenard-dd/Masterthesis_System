@@ -14,6 +14,11 @@ from llm_skill_robot.safety.hardware_mode import (
     clamp_or_reject_gripper_command,
     load_hardware_mode,
 )
+from llm_skill_robot.safety.real_arm_safety import (
+    RealArmSafetyConfig,
+    load_real_arm_safety,
+    validate_contact_close_allowed,
+)
 from llm_skill_robot.utils import get_config_dir
 
 
@@ -36,12 +41,18 @@ class Robotiq2F140RealBackend:
         node=None,
         config: dict | None = None,
         hardware_mode: HardwareMode | None = None,
+        real_arm_safety: RealArmSafetyConfig | None = None,
+        confirmation_provider=None,
+        audit_logger=None,
     ):
         raw_config = self._load_config() if config is None else config
         self.config = raw_config.get("gripper", raw_config)
         self.driver_config = dict(self.config.get("driver", {}))
         self.node = node
         self.hardware_mode = hardware_mode or load_hardware_mode()
+        self.real_arm_safety = real_arm_safety or load_real_arm_safety()
+        self.confirmation_provider = confirmation_provider or input
+        self.audit_logger = audit_logger
 
         self.default_open_width_m = float(
             self.config.get("default_open_width_m", self.hardware_mode.gripper.max_width_m)
@@ -91,6 +102,13 @@ class Robotiq2F140RealBackend:
         force_N: float | None = None,
         **kwargs: Any,
     ) -> dict:
+        if kwargs.pop("during_contact", False) is True:
+            return self.close_for_grasp(
+                width_m=width_m,
+                speed_mps=speed_mps,
+                force_N=force_N,
+                **kwargs,
+            )
         return self.set_gripper_width(
             self.safe_close_width_m if width_m is None else width_m,
             speed_mps=speed_mps,
@@ -98,6 +116,112 @@ class Robotiq2F140RealBackend:
             command="close_gripper",
             **kwargs,
         )
+
+    def close_for_grasp(
+        self,
+        width_m: float | None = None,
+        speed_mps: float | None = None,
+        force_N: float | None = None,
+        **kwargs: Any,
+    ) -> dict:
+        """Close on an object only after the full-supervised YES confirmation.
+
+        This method is intentionally separate from ordinary non-contact closing:
+        a boolean ``confirmed=True`` is never sufficient for contact close.
+        """
+        if not self.hardware_mode.gripper.allow_contact_close:
+            return self._result(
+                False,
+                "Contact close is disabled by hardware_mode.yaml.",
+                status="REJECTED",
+            )
+        contact_allowed = validate_contact_close_allowed(self.real_arm_safety)
+        if not contact_allowed.get("allowed", False):
+            return self._result(False, str(contact_allowed["reason"]), status="REJECTED")
+
+        configured_close_width = self.real_arm_safety.gripper.get(
+            "close_width_m", self.config.get("close_width_m", self.safe_close_width_m)
+        )
+        resolved_width = configured_close_width if width_m is None else width_m
+        resolved_speed = self.default_speed_mps if speed_mps is None else speed_mps
+        resolved_force = self.default_force_N if force_N is None else force_N
+        preview = {
+            "width_m": resolved_width,
+            "speed_mps": resolved_speed,
+            "force_N": resolved_force,
+            "mode": "real_grasp_contact_close",
+        }
+        self._audit("contact_close_requested", command_preview=preview)
+        print("Real grasp contact-close command preview:")
+        print(f"  width_m: {resolved_width}")
+        print(f"  force_N: {resolved_force}")
+        print(f"  speed_mps: {resolved_speed}")
+        print("  mode: real_grasp_contact_close")
+
+        try:
+            safe_command = clamp_or_reject_gripper_command(
+                width_m=resolved_width,
+                speed_mps=resolved_speed,
+                force_N=resolved_force,
+                mode=self.hardware_mode,
+            )
+        except (ValueError, TypeError, PermissionError) as exc:
+            return self._result(False, str(exc), status="REJECTED")
+
+        confirmation = kwargs.get("confirmation")
+        if confirmation is None:
+            confirmation = self.confirmation_provider(
+                "Type YES to close the REAL gripper on the object:\n> "
+            )
+        if confirmation != self.real_arm_safety.gripper.get("confirmation_phrase", "YES"):
+            return self._result(
+                False,
+                "Exact YES confirmation is required before real grasp contact close.",
+                status="REJECTED",
+                extra_output={"command_preview": preview},
+            )
+        self._audit("contact_close_confirmed", command_preview=preview)
+
+        # The generic path retains all existing hardware-enable and driver checks;
+        # the exact YES above is converted to its internal execution gate here.
+        result = self.set_gripper_width(
+            safe_command["width_m"],
+            speed_mps=safe_command["speed_mps"],
+            force_N=safe_command["force_N"],
+            command="close_for_grasp",
+            confirmed=True,
+        )
+        output = result.setdefault("output", {})
+        output["command_preview"] = preview
+        output["mode"] = "real_grasp_contact_close"
+        if output.get("command_sent", False):
+            self._audit("contact_close_command_sent", command_preview=preview)
+
+        self._wait_for_state_feedback()
+        feedback_width = self._latest_feedback_width_m
+        if feedback_width is None and output.get("feedback_available", False):
+            feedback_width = output.get("current_width_m")
+        feedback_available = feedback_width is not None
+        if feedback_available:
+            feedback_width = float(feedback_width)
+        output.update(
+            {
+                "feedback_available": feedback_available,
+                "current_width_m": feedback_width,
+                "object_may_be_held": (
+                    bool(feedback_width > safe_command["width_m"] + 0.002)
+                    if feedback_available
+                    else None
+                ),
+            }
+        )
+        self._audit(
+            "contact_close_feedback",
+            feedback_available=feedback_available,
+            current_width_m=feedback_width,
+            object_may_be_held=output["object_may_be_held"],
+        )
+        return result
 
     def set_gripper_width(
         self,
@@ -127,6 +251,7 @@ class Robotiq2F140RealBackend:
             return self._result(False, str(exc), status="REJECTED")
 
         driver_result = self._send_driver_command(**safe_command)
+        reported_width = None
         if driver_result.get("success", False):
             reported_width = driver_result.get("output", {}).get("current_width_m")
             self.current_width_m = (
@@ -139,6 +264,10 @@ class Robotiq2F140RealBackend:
         output = dict(driver_result.get("output", {}))
         output.setdefault("requested_command", command_name)
         output.setdefault("validated_command", safe_command)
+        output.setdefault(
+            "feedback_available",
+            reported_width is not None or self._latest_feedback_width_m is not None,
+        )
         return self._result(
             bool(driver_result.get("success", False)),
             str(driver_result.get("message", DRIVER_NOT_CONFIGURED_MESSAGE)),
@@ -615,6 +744,12 @@ class Robotiq2F140RealBackend:
         }
         output.update(extra_output or {})
         return {"success": success, "status": status, "message": message, "output": output}
+
+    def _audit(self, event: str, **fields: Any) -> None:
+        if self.audit_logger is not None and hasattr(
+            self.audit_logger, "log_hardware_safety_event"
+        ):
+            self.audit_logger.log_hardware_safety_event(event, **fields)
 
     @staticmethod
     def _driver_unavailable(detail: str) -> dict:

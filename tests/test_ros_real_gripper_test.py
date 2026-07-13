@@ -3,6 +3,7 @@ import importlib
 import pytest
 
 from llm_skill_robot.ros_real_gripper_test import (
+    assert_real_gripper_test_allowed,
     build_command_preview,
     close_command_preview,
     confirmation_is_yes,
@@ -22,6 +23,10 @@ def test_confirmation_helper_rejects_everything_except_exact_yes(response):
 
 def test_confirmation_helper_accepts_exact_yes():
     assert confirmation_is_yes("YES") is True
+
+
+def test_gripper_only_test_is_allowed_with_full_supervised_arm_enabled():
+    assert assert_real_gripper_test_allowed(load_hardware_mode()) is None
 
 
 def test_command_preview_contains_width_speed_and_force():
