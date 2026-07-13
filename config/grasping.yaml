@@ -49,9 +49,9 @@ grasping:
         pregrasp: PTP
         grasp: LIN
         retreat: LIN
-      num_planning_attempts: 1
-      allowed_planning_time_sec: 3.0
-      service_timeout_sec: 8.0
+      num_planning_attempts: 3
+      allowed_planning_time_sec: 6.0
+      service_timeout_sec: 10.0
     # GraspGenX score alone does not guarantee that the UR5 can reach the
     # candidate from its current joint state. Before previewing the full
     # pregrasp/grasp/retreat sequence, test the top candidates with MoveIt
@@ -60,7 +60,7 @@ grasping:
     # candidates that create complex RViz paths or fail validation.
     candidate_screening:
       enabled: true
-      max_candidates: 20
+      max_candidates: 30
       variants: [full_pose, relaxed_orientation, position_only]
       position_tolerance_m: 0.01
       full_orientation_tolerance_rad: 0.05

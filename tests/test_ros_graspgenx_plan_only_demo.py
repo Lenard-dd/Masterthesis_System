@@ -1,11 +1,13 @@
 import importlib
 import math
+from dataclasses import replace
 
 import pytest
 
 from llm_skill_robot.ros_graspgenx_plan_only_demo import (
     apply_grasp_frame_to_ee_transform,
     attempt_real_arm_execution,
+    assert_plan_only_mode,
     camera_message_status,
     create_preview_poses,
     describe_grasp_frame_to_ee_transform,
@@ -444,6 +446,18 @@ def test_pregrasp_diagnostics_runs_full_relaxed_and_position_only_plans():
 def test_real_arm_execution_blocked_even_after_confirmation():
     with pytest.raises(PermissionError, match="HW4 never executes real arm trajectories"):
         attempt_real_arm_execution(load_hardware_mode(), confirmed=True)
+
+
+def test_plan_only_preview_is_allowed_in_full_grasp_supervised_mode():
+    assert assert_plan_only_mode(load_hardware_mode()) is None
+
+
+def test_plan_only_preview_is_blocked_when_plan_only_is_disabled():
+    mode = load_hardware_mode()
+    disabled = replace(mode, arm=replace(mode.arm, allow_plan_only=False))
+
+    with pytest.raises(PermissionError, match="Plan-only arm requests are disabled"):
+        assert_plan_only_mode(disabled)
 
 
 def test_preview_pose_offsets_do_not_modify_grasp_pose():
