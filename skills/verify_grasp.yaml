@@ -1,0 +1,14 @@
+skill_id: "verify_grasp"
+name: "Verify Grasp Conservatively"
+description: "Assess post-retreat gripper feedback and optional perception evidence without claiming definite grasp success"
+parameters:
+  - name: "object_id"
+    type: "string"
+    required: true
+preconditions:
+  - "gripper_contact_close_completed"
+  - "retreat_completed"
+effects:
+  - "grasp_verification_available"
+execution:
+  backend_method: "verify_grasp"
