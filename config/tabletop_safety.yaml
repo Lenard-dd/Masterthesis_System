@@ -2,7 +2,8 @@
 #
 # This does NOT change RViz, MoveIt, the shared URDF, or its collision model.
 # MoveIt continues to collision-check the complete planned trajectory. These
-# values add a calibrated TCP target/approach screen before real execution.
+# values add a calibrated gripper-contact target/approach screen before real
+# execution.
 tabletop_safety:
   enabled: true
   frame: base_link
@@ -12,17 +13,35 @@ tabletop_safety:
     normal: {x: 0.0010942130, y: 0.0124989139, z: 0.9999211287}
     d: -0.0017921438
 
-  # Original conservative TCP-only settings used before finger-envelope
-  # collision sampling was introduced.
-  collision_margin_m: 0.012
-  clearance:
-    pregrasp_m: 0.040
-    grasp_m: 0.025
-    retreat_m: 0.040
+  # Local point from MoveIt's tool0 to the Robotiq grasp/fingertip region.
+  # 0.004 m tool0-to-mount + approximately 0.195 m gripper-base-to-contact.
+  # The vector is rotated by each candidate's tool0 orientation before the
+  # table-plane distance is evaluated.
+  tool0_to_grasp_contact_m: [0.0, 0.0, 0.199]
 
-  # Additional TCP clearance for the final grasp. This affects validation
-  # only; it does not alter the generated grasp pose.
-  close_sweep_compensation_m: 0.010
+  # The Robotiq fingertips advance approximately 25 mm along the approach axis
+  # while moving from open to closed. Back the final target away by 40 mm:
+  # 25 mm kinematic compensation plus approximately 15 mm residual clearance.
+  # All corrected poses are replanned and revalidated.
+  grasp_contact_backoff_m: 0.040
+
+  # Measured open-to-closed fingertip travel along the forward approach axis.
+  # Safety validation checks the endpoint of this sweep, including tilted
+  # candidates, instead of treating it as a fixed table-normal distance.
+  finger_axial_close_sweep_m: 0.025
+
+  # Base allowance covering the measured plane residual (~4.8 mm), depth/TF
+  # noise and a small remaining physical margin.
+  collision_margin_m: 0.008
+  clearance:
+    pregrasp_m: 0.020
+    grasp_m: 0.005
+    retreat_m: 0.020
+
+  # Optional clearance in addition to the explicitly modelled 25 mm sweep.
+  # Keep this at zero unless repeatability measurements justify more margin;
+  # collision_margin_m and clearance.grasp_m already provide 13 mm together.
+  close_sweep_compensation_m: 0.000
 
   # Keep the original near-normal tabletop approach restriction.
-  max_approach_tilt_deg: 20.0
+  max_approach_tilt_deg: 30.0

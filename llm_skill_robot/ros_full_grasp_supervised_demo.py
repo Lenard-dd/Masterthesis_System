@@ -213,13 +213,7 @@ class FullGraspSupervisedDemoController:
         score = float(_value(candidate, "score", 0.0))
         candidate_id = str(_value(candidate, "candidate_id", "unknown"))
         try:
-            poses = self.pose_builder(
-                candidate,
-                point_cloud,
-                self.grasping_config.get("plan_only_preview", {}),
-                "base_link",
-                self.transformer,
-            )
+            poses = self._prepare_poses(candidate, point_cloud)
         except Exception as exc:
             return self._abort(f"Could not prepare base_link GraspPlan: {exc}")
         grasp_plan = {
@@ -451,13 +445,7 @@ class FullGraspSupervisedDemoController:
     ) -> dict[str, Any]:
         """Reject candidates whose grasp or retreat targets have no plan-only IK."""
         try:
-            poses = self.pose_builder(
-                candidate,
-                point_cloud,
-                self.grasping_config.get("plan_only_preview", {}),
-                "base_link",
-                self.transformer,
-            )
+            poses = self._prepare_poses(candidate, point_cloud)
         except Exception as exc:
             return {"allowed": False, "attempts": [{
                 "candidate_id": str(_value(candidate, "candidate_id", "unknown")),
@@ -538,6 +526,27 @@ class FullGraspSupervisedDemoController:
             "retreat_pose": poses.get("retreat"),
         }
         return self.tabletop_safety.validate_grasp_plan(plan)
+
+    def _prepare_poses(
+        self, candidate: Any, point_cloud: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Build common poses and apply configured approach-axis backoff."""
+        poses = self.pose_builder(
+            candidate,
+            point_cloud,
+            self.grasping_config.get("plan_only_preview", {}),
+            "base_link",
+            self.transformer,
+        )
+        if self.tabletop_safety is not None:
+            poses = self.tabletop_safety.apply_grasp_contact_backoff(poses)
+            if self.tabletop_safety.grasp_contact_backoff_m > 0.0:
+                self.results["grasp_contact_backoff"] = {
+                    "enabled": True,
+                    "distance_m": self.tabletop_safety.grasp_contact_backoff_m,
+                    "direction": "toward_pregrasp_along_approach_axis",
+                }
+        return poses
 
     @staticmethod
     def _pose_distance(first: dict[str, Any], second: dict[str, Any]) -> float:
