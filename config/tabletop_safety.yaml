@@ -1,9 +1,8 @@
 # Independent tabletop guard for the real supervised grasp demo.
 #
 # This does NOT change RViz, MoveIt, the shared URDF, or its collision model.
-# MoveIt continues to collision-check the complete planned trajectory.  These
-# values add a calibrated, fail-closed target/approach screen before planning
-# and again before execution.
+# MoveIt continues to collision-check the complete planned trajectory. These
+# values add a calibrated TCP target/approach screen before real execution.
 tabletop_safety:
   enabled: true
   frame: base_link
@@ -13,35 +12,17 @@ tabletop_safety:
     normal: {x: 0.0010942130, y: 0.0124989139, z: 0.9999211287}
     d: -0.0017921438
 
-  # 12 mm covers the calibration residual (~4.8 mm maximum), depth noise,
-  # base/hand-eye drift, and a small physical margin.  The stage clearances
-  # below are additional distances above this margin.
+  # Original conservative TCP-only settings used before finger-envelope
+  # collision sampling was introduced.
   collision_margin_m: 0.012
   clearance:
     pregrasp_m: 0.040
     grasp_m: 0.025
     retreat_m: 0.040
 
-  # Robotiq fingers move down slightly while closing.  The grasp target must
-  # therefore keep another 10 mm above the table beyond grasp_m.  This setting
-  # is intentionally conservative; validate it with a plan-only run first.
+  # Additional TCP clearance for the final grasp. This affects validation
+  # only; it does not alter the generated grasp pose.
   close_sweep_compensation_m: 0.010
 
-  # Finger-aware safety proxy.  It uses the Robotiq 2F-140 collision-pad
-  # kinematics to test both pads' eight corners from fully open through the
-  # configured close angle.  This is independent of, and stricter than, the
-  # shared MoveIt table collision object.
-  robotiq_2f_140_finger_envelope:
-    enabled: true
-    # tool0 -> camera_mount / Robotiq base fixed offset in this workcell.
-    tool0_to_gripper_base_m: [0.0, 0.0, 0.004]
-    joint_min_rad: 0.0
-    joint_max_rad: 0.70
-    joint_samples: 15
-    # Extra physical allowance for pad compliance, mounting tolerance and
-    # residual link geometry not represented by the pad box proxy.
-    extra_clearance_m: 0.005
-
-  # The pregrasp -> grasp vector must be close to the measured table normal.
-  # This avoids lateral sweeping of open fingers near the tabletop.
+  # Keep the original near-normal tabletop approach restriction.
   max_approach_tilt_deg: 20.0

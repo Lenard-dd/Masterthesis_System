@@ -452,8 +452,11 @@ class FullGraspSupervisedDemoController:
         """Reject candidates whose grasp or retreat targets have no plan-only IK."""
         try:
             poses = self.pose_builder(
-                candidate, point_cloud, self.grasping_config.get("plan_only_preview", {}),
-                "base_link", self.transformer,
+                candidate,
+                point_cloud,
+                self.grasping_config.get("plan_only_preview", {}),
+                "base_link",
+                self.transformer,
             )
         except Exception as exc:
             return {"allowed": False, "attempts": [{
