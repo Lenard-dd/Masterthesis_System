@@ -38,6 +38,19 @@ class FakeMoveItBackend:
             },
         }
 
+    def plan_to_named_target(self, target, **kwargs):
+        self.plan_calls.append({"target": target, **kwargs})
+        return {
+            "success": True,
+            "plan_id": f"plan_{len(self.plan_calls)}",
+            "summary": {
+                "success": True,
+                "num_trajectory_points": 4,
+                "max_joint_delta_rad": 0.1,
+                "total_joint_delta_rad": 0.2,
+            },
+        }
+
     def get_current_pose(self):
         return self.current_pose
 
@@ -117,3 +130,13 @@ def test_missing_grasp_plan_is_blocked_before_planning():
     assert result["success"] is False
     assert "GraspPlan" in result["message"]
     assert moveit.plan_calls == []
+
+
+def test_move_to_observe_is_a_single_confirmed_named_target_motion():
+    moveit = FakeMoveItBackend()
+
+    result = _backend(moveit).move_to_observe(confirmation="EXECUTE")
+
+    assert result["success"] is True
+    assert moveit.plan_calls[0]["target"] == "observe"
+    assert moveit.execute_calls == [("plan_1", True)]

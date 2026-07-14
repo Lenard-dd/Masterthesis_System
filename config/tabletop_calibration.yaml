@@ -1,0 +1,15 @@
+# This tool is read-only. Adjust the normalized ROI to a clear tabletop patch
+# seen in the aligned depth image; exclude the object, gripper, table edge and
+# reflective areas. Coordinates are fractions of image width/height.
+tabletop_calibration:
+  u_range_normalized: [0.15, 0.85]
+  v_range_normalized: [0.55, 0.95]
+  min_depth_m: 0.10
+  max_depth_m: 2.00
+  depth_scale: 0.001
+  max_points: 12000
+  ransac_iterations: 300
+  inlier_threshold_m: 0.006
+  max_tilt_deg: 12.0
+  minimum_inliers: 500
+  collision_margin_m: 0.008

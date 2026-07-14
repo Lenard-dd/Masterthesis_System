@@ -277,6 +277,10 @@ def require_execute_confirmation(
 
 
 _SUPPORTED_EXECUTION_MODES = frozenset({"restricted_real_motion", "full_grasp_supervised"})
+# Floating-point pose arithmetic can represent an exact configured 0.06 m
+# segment as 0.060000000000000004.  This tolerance is one nanometre, far below
+# any physical motion resolution, and only prevents that representation error.
+_DISTANCE_COMPARISON_TOLERANCE_M = 1e-9
 
 
 def _validate_config(config: RealArmSafetyConfig) -> None:
@@ -344,7 +348,7 @@ def _validate_distance(distance_m: Any, limit: float, name: str) -> dict[str, An
     distance = _finite_float(distance_m, name)
     if distance < 0:
         return _blocked(f"{name} must be non-negative.")
-    if distance > limit:
+    if distance > limit + _DISTANCE_COMPARISON_TOLERANCE_M:
         return _blocked(f"{name} {distance} exceeds limit {limit}.")
     return _allowed(f"{name} {distance} is within limit {limit}.")
 

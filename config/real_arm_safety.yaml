@@ -52,7 +52,11 @@ real_arm_safety:
     allow_open_gripper: true
     allow_set_width: true
     allow_close_gripper: true
-    close_width_m: 0.0
+    # Keep a small non-zero aperture for real contact close. With the current
+    # GripperCommand joint mapping, 0.0 m maps to the exact 0.7-rad end stop,
+    # which the live controller rejects. 0.02 m maps to 0.6 rad and still
+    # permits force-limited contact on the object.
+    close_width_m: 0.02
     safe_close_width_m: 0.02
     max_force_N: 20.0
     max_speed_mps: 0.03

@@ -28,7 +28,9 @@ grasping:
     require_server_confirmation: true
 
   plan_only_preview:
-    pregrasp_distance_m: 0.12
+    # Must not exceed real_arm_safety.limits.max_approach_distance_m: the
+    # pregrasp-to-grasp segment is later executed as one supervised approach.
+    pregrasp_distance_m: 0.06
     retreat_distance_m: 0.10
     # Interpret retreat_vector after TF and tool0 conversion, in the final
     # MoveIt target frame. With target_frame=base_link, [0, 0, 1] means lift up
@@ -70,12 +72,12 @@ grasping:
         enabled: true
         prefer_top_down: true
         max_tilt_deg: 30.0
-        top_down_weight: 1.0
+        top_down_weight: 2.0
         prefer_face_aligned_yaw: true
         max_face_yaw_deviation_deg: 25.0
-        face_alignment_weight: 1.0
+        face_alignment_weight: 2.0
         prefer_current_gripper_yaw: true
-        current_yaw_weight: 1.5
+        current_yaw_weight: 3.0
         max_preferred_yaw_change_deg: 90.0
         # Optional TF source for the current real gripper closing direction.
         # Set current_gripper_frame to the finger frame whose blue/Z axis is

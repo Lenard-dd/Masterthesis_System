@@ -189,6 +189,9 @@ class PregraspRealDemoController:
         self,
         candidates: list[Any],
         point_cloud: dict,
+        *,
+        preserve_candidate_order: bool = False,
+        report_rejections: bool = True,
     ) -> PregraspSelection | None:
         screening_config = self.preview_config.get("candidate_screening", {}) or {}
         max_candidates = max(1, int(screening_config.get("max_candidates", 12)))
@@ -204,11 +207,13 @@ class PregraspRealDemoController:
             for candidate in candidates
             if _candidate_value(candidate, "valid", True) is not False
         ]
-        valid_candidates = sorted(
-            valid_candidates,
-            key=lambda candidate: float(_candidate_value(candidate, "score", 0.0) or 0.0),
-            reverse=True,
-        )[:max_candidates]
+        if not preserve_candidate_order:
+            valid_candidates = sorted(
+                valid_candidates,
+                key=lambda candidate: float(_candidate_value(candidate, "score", 0.0) or 0.0),
+                reverse=True,
+            )
+        valid_candidates = valid_candidates[:max_candidates]
 
         attempts: list[dict[str, Any]] = []
         for candidate_index, candidate in enumerate(valid_candidates, start=1):
@@ -311,14 +316,15 @@ class PregraspRealDemoController:
                 return PregraspSelection(candidate, variant, pregrasp_pose, plan, attempts)
 
         self._audit("pregrasp_candidate_screening_failed", attempts=attempts)
-        print("\nPregrasp candidate screening rejected all candidates:")
-        for attempt in attempts[:20]:
-            print(
-                "- "
-                f"candidate={attempt.get('candidate_id')} "
-                f"variant={attempt.get('variant')} "
-                f"reason={attempt.get('reason')}"
-            )
+        if report_rejections:
+            print("\nPregrasp candidate screening rejected all candidates:")
+            for attempt in attempts[:20]:
+                print(
+                    "- "
+                    f"candidate={attempt.get('candidate_id')} "
+                    f"variant={attempt.get('variant')} "
+                    f"reason={attempt.get('reason')}"
+                )
         return None
 
     def _build_point_cloud(self, selected_object: Any) -> dict:

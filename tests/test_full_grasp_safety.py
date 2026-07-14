@@ -29,6 +29,12 @@ def test_approach_grasp_is_allowed_with_safe_distance():
     assert result["requires_confirmation"] is True
 
 
+def test_approach_grasp_allows_floating_point_representation_of_exact_limit():
+    result = validate_approach_distance(0.060000000000000004, load_real_arm_safety())
+
+    assert result["allowed"] is True
+
+
 def test_approach_grasp_is_blocked_when_distance_is_too_long():
     result = validate_approach_distance(0.061, load_real_arm_safety())
 

@@ -372,7 +372,17 @@ For a MoveIt plan-only preview of the selected GraspGenX pose, run:
 ros2 run llm_skill_robot ros-graspgenx-plan-only-demo
 ```
 
-This demo derives pregrasp, grasp, and retreat poses, requests plan-only MoveIt trajectories, validates them, and publishes the resulting sequence to RViz for human review. It never calls MoveIt execution, never sends a trajectory to the UR5 controller, and never commands the real gripper. `hardware_mode.yaml` must keep real-arm execution disabled; even a positive confirmation cannot enable real-arm motion in this flow.
+This demo derives pregrasp, grasp, and retreat poses, requests plan-only MoveIt trajectories, validates them, and publishes the resulting sequence to RViz for human review. It never calls MoveIt execution, never sends a trajectory to the UR5 controller, and never commands the real gripper. It remains plan-only even when `hardware_mode.yaml` enables supervised real-arm execution for a separate demo.
+
+## Full supervised real grasp demo
+
+Only after validating camera, TF, MoveIt, gripper feedback, and the plan-only workflow, start the real supervised grasp demo:
+
+```bash
+ros2 run llm_skill_robot ros-full-grasp-supervised-demo
+```
+
+This command can move the real UR5 and close the real Robotiq gripper on an object. It never offers a single “execute full pick” confirmation: every arm motion requires a new exact `EXECUTE`, and the contact close requires a separate exact `YES`. Planning, trajectory validation, trajectory review, candidate-score checks, and the full-grasp state machine remain mandatory. Any rejected confirmation, failed plan, invalid state transition, or insufficient verification evidence stops the sequence; `UNCERTAIN` verification is reported honestly rather than treated as success.
 
 If the RViz preview looks twisted, overly complex, or ends at an unexpected gripper pose, check the frame convention before tuning MoveIt. GraspGenX reports a grasp frame, while MoveIt plans the UR5 end-effector frame from `config/ur5.yaml` (`tool0` by default). Configure the measured offset in `config/grasping.yaml`:
 

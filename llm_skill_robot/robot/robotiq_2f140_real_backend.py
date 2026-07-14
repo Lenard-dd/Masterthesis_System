@@ -506,8 +506,16 @@ class Robotiq2F140RealBackend:
                 return {
                     "success": False,
                     "status": "REJECTED",
-                    "message": f"GripperCommand goal was rejected by {action_name}.",
-                    "output": {"command_sent": False, "action_name": action_name},
+                    "message": (
+                        f"GripperCommand goal was rejected by {action_name} "
+                        f"for driver position {driver_position:.6f}."
+                    ),
+                    "output": {
+                        "command_sent": False,
+                        "action_name": action_name,
+                        "requested_width_m": command["width_m"],
+                        "commanded_driver_position": driver_position,
+                    },
                 }
 
             result_future = goal_handle.get_result_async()

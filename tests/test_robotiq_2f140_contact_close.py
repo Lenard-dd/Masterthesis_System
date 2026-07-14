@@ -102,7 +102,7 @@ def test_contact_close_yes_sends_through_mocked_driver():
     result = backend.close_for_grasp(confirmation="YES")
 
     assert result["success"] is True
-    assert sent == [{"width_m": 0.0, "speed_mps": 0.02, "force_N": 10.0}]
+    assert sent == [{"width_m": 0.02, "speed_mps": 0.02, "force_N": 10.0}]
     assert result["output"]["command_sent"] is True
     assert result["output"]["mode"] == "real_grasp_contact_close"
 
