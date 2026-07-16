@@ -94,6 +94,23 @@ def test_llm_full_grasp_plan_contains_required_sequence(tmp_path):
     assert any(entry["event"] == "llm_full_grasp_plan_generated" for entry in entries)
 
 
+def test_rviz_detection_policy_adds_observe_to_full_grasp_plan():
+    generator = LLMPlanGenerator(
+        FakeLLMClient(_full_plan()),
+        hardware_mode=_full_mode(),
+        require_observe_before_detection=True,
+    )
+
+    generated = generator.generate_plan(
+        "Pick the red cube",
+        [SkillLibrary().get_skill(skill_id) for skill_id in SkillLibrary().list_skills()],
+    )
+
+    assert generated.steps[0].skill_id == "move_to_named_target"
+    assert generated.steps[0].parameters["target_name"] == "observe"
+    assert [step.skill_id for step in generated.steps[1:]] == REQUIRED_SEQUENCE
+
+
 def test_llm_direct_pick_is_blocked_in_full_mode():
     plan = RobotPlan(
         task="pick directly",
@@ -170,6 +187,25 @@ def test_raw_command_is_blocked():
 
     assert result.decision == VerificationDecision.BLOCK
     assert any("Raw ROS" in reason for reason in result.reasons)
+
+
+def test_detection_is_blocked_when_demo_requires_observe_precondition():
+    verifier = PlanVerifier(SkillLibrary(), hardware_mode=_full_mode())
+    plan = RobotPlan(task="detect", steps=[PlanStep(
+        step_id="1", skill_id="detect_object", description="detect cube",
+        parameters={"query": "cube"},
+    )])
+
+    result = verifier.verify_plan(
+        plan,
+        context={
+            "skip_perception_scene_checks": True,
+            "require_observe_before_detection": True,
+        },
+    )
+
+    assert result.decision == VerificationDecision.BLOCK
+    assert any("target_name=observe" in reason for reason in result.reasons)
 
 
 class FullBackend:

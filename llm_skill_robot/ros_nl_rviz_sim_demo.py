@@ -27,6 +27,7 @@ from llm_skill_robot.perception.perception_pipeline import PerceptionPipeline
 from llm_skill_robot.perception.object_point_cloud_builder import ObjectPointCloudBuilder
 from llm_skill_robot.grasping.graspgenx_grasp_planner import GraspGenXGraspPlanner
 from llm_skill_robot.grasping.graspgenx_subprocess_adapter import GraspGenXSubprocessAdapter
+from llm_skill_robot.grasping.grasp_verifier import GraspVerifier
 from llm_skill_robot.robot.robotiq_2f140_sim_backend import Robotiq2F140SimBackend
 from llm_skill_robot.robot.robotiq_2f140_joint_state_sim import Robotiq2F140JointStateSim
 from llm_skill_robot.robot.ur5_moveit_plan_backend import UR5MoveItPlanBackend
@@ -86,7 +87,7 @@ def _print_motion_plan_summary(plan_result: dict) -> None:
     summary = plan_result["summary"]
     print("\nMotion Plan Summary:")
     print(f"Plan ID: {plan_result['plan_id']}")
-    print(f"Target: {summary.get('target_name')}")
+    print(f"Target: {summary.get('target_name') or summary.get('target_pose')}")
     print(f"Planning group: {summary.get('planning_group')}")
     print(f"Trajectory points: {summary.get('num_trajectory_points')}")
     print(f"Duration sec: {summary.get('duration_sec')}")
@@ -310,6 +311,30 @@ def execute_non_motion_skill(
             "output": result,
         }
 
+    if step.skill_id == "verify_grasp":
+        object_id = step.parameters.get("object_id") or context.get("resolved_object_id")
+        if object_id == "<resolved>":
+            object_id = context.get("resolved_object_id")
+        gripper_state = (
+            gripper_backend.get_gripper_state()
+            if gripper_backend is not None else None
+        )
+        verification = GraspVerifier().verify_grasp(
+            str(object_id or "unknown"),
+            gripper_state=gripper_state,
+            perception_result=None,
+        )
+        return {
+            "step_id": step.step_id,
+            "skill_id": step.skill_id,
+            "parameters": dict(step.parameters),
+            "mode": "rviz_sim",
+            "success": True,
+            "status": verification["status"],
+            "message": verification["message"],
+            "output": verification,
+        }
+
     if step.skill_id not in GRIPPER_SKILL_IDS:
         result = {
             "success": False,
@@ -502,15 +527,34 @@ def _run_motion_step(
     trajectory_validator: TrajectoryValidator,
     trajectory_reviewer: TrajectoryReviewer,
     audit_logger: AuditLogger,
+    target_pose: Dict[str, Any] | None = None,
+    plan_kwargs: Dict[str, Any] | None = None,
+    velocity_scale: float | None = None,
+    acceleration_scale: float | None = None,
 ) -> Dict[str, Any]:
-    target = step.parameters.get("target") or step.parameters.get("target_name")
-    plan_result = backend.plan_to_named_target(
-        target=target,
-        velocity_scale=step.parameters.get("velocity_scale", 0.03),
-        acceleration_scale=step.parameters.get("acceleration_scale", 0.03),
-        skill_id=step.skill_id,
-        step_id=int(step.step_id),
-    )
+    motion_kwargs = {
+        "velocity_scale": (
+            step.parameters.get("velocity_scale", 0.03)
+            if velocity_scale is None else velocity_scale
+        ),
+        "acceleration_scale": (
+            step.parameters.get("acceleration_scale", 0.03)
+            if acceleration_scale is None else acceleration_scale
+        ),
+        "skill_id": step.skill_id,
+        "step_id": int(step.step_id),
+        **dict(plan_kwargs or {}),
+    }
+    if target_pose is None:
+        target = step.parameters.get("target") or step.parameters.get("target_name")
+        plan_result = backend.plan_to_named_target(target=target, **motion_kwargs)
+    else:
+        plan_result = backend.plan_to_pose(
+            frame=target_pose["frame"],
+            position=target_pose["position"],
+            orientation=target_pose["orientation"],
+            **motion_kwargs,
+        )
     _print_motion_plan_summary(plan_result)
     _audit_event(
         audit_logger,

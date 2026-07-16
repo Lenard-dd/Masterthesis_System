@@ -197,37 +197,15 @@ class FullGraspSupervisedDemoController:
             return self._report()
 
         generation = self.grasp_planner.generate_candidates(point_cloud["point_cloud_path"])
-        candidates = self._eligible_candidates(generation.get("candidates", []))
-        if not candidates:
-            return self._abort("No valid GraspGenX candidate meets the minimum grasp score.")
-        screening = self._screen_pregrasp_candidates(candidates, point_cloud)
-        if screening is None:
-            return self._abort("No candidate produced a safe, reachable pregrasp trajectory.")
-        candidate, selected_variant, attempts = screening
-        self.results["candidate_screening"] = {
-            "success": True,
-            "selected_candidate_id": str(_value(candidate, "candidate_id", "unknown")),
-            "selected_variant": selected_variant,
-            "attempt_count": len(attempts),
-        }
-        score = float(_value(candidate, "score", 0.0))
-        candidate_id = str(_value(candidate, "candidate_id", "unknown"))
-        try:
-            poses = self._prepare_poses(candidate, point_cloud)
-        except Exception as exc:
-            return self._abort(f"Could not prepare base_link GraspPlan: {exc}")
-        grasp_plan = {
-            "pregrasp_pose": poses.get("pregrasp"),
-            "grasp_pose": poses.get("grasp"),
-            "retreat_pose": poses.get("retreat"),
-            "grasp_score": score,
-            "candidate_id": candidate_id,
-        }
-        self._configure_motion_planning(selected_variant)
-        if not all(self._pose_is_base_link(grasp_plan[key]) for key in (
-            "pregrasp_pose", "grasp_pose", "retreat_pose"
-        )):
-            return self._abort("GraspPlan poses must all be in base_link.")
+        selection = self.select_safe_grasp_candidate(
+            generation.get("candidates", []), point_cloud
+        )
+        if not selection["success"]:
+            return self._abort(selection["message"])
+        candidate = selection["candidate"]
+        score = selection["score"]
+        candidate_id = selection["candidate_id"]
+        grasp_plan = selection["grasp_plan"]
         self.state.update_context(
             selected_grasp_candidate_id=candidate_id,
             selected_grasp_score=score,
@@ -278,6 +256,69 @@ class FullGraspSupervisedDemoController:
             return self._report()
         self._transition(self.state.DONE, "Supervised grasp sequence completed.")
         return self._report()
+
+    def select_safe_grasp_candidate(
+        self,
+        candidates: list[Any],
+        point_cloud: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Select and prepare one candidate using the demo's complete safety screen."""
+        eligible = self._eligible_candidates(candidates)
+        if not eligible:
+            return {
+                "success": False,
+                "message": "No valid GraspGenX candidate meets the minimum grasp score.",
+            }
+        screening = self._screen_pregrasp_candidates(eligible, point_cloud)
+        if screening is None:
+            return {
+                "success": False,
+                "message": "No candidate produced a safe, reachable full grasp trajectory.",
+            }
+        candidate, selected_variant, attempts = screening
+        score = float(_value(candidate, "score", 0.0))
+        candidate_id = str(_value(candidate, "candidate_id", "unknown"))
+        try:
+            poses = self._prepare_poses(candidate, point_cloud)
+        except Exception as exc:
+            return {
+                "success": False,
+                "message": f"Could not prepare base_link GraspPlan: {exc}",
+            }
+        grasp_plan = {
+            "pregrasp_pose": poses.get("pregrasp"),
+            "grasp_pose": poses.get("grasp"),
+            "retreat_pose": poses.get("retreat"),
+            "grasp_score": score,
+            "candidate_id": candidate_id,
+        }
+        if not all(self._pose_is_base_link(grasp_plan[key]) for key in (
+            "pregrasp_pose", "grasp_pose", "retreat_pose"
+        )):
+            return {
+                "success": False,
+                "message": "GraspPlan poses must all be in base_link.",
+            }
+        self._configure_motion_planning(selected_variant)
+        screening_result = {
+            "success": True,
+            "selected_candidate_id": candidate_id,
+            "selected_variant": selected_variant,
+            "attempt_count": len(attempts),
+        }
+        self.results["candidate_screening"] = screening_result
+        return {
+            "success": True,
+            "message": "Selected a safe, reachable full-grasp candidate.",
+            "candidate": candidate,
+            "candidate_id": candidate_id,
+            "score": score,
+            "selected_variant": selected_variant,
+            "attempts": attempts,
+            "poses": poses,
+            "grasp_plan": grasp_plan,
+            "candidate_screening": screening_result,
+        }
 
     def _open_gripper(self) -> bool:
         self._show_action("open_gripper", "YES")

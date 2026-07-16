@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from llm_skill_robot.agent.base_plan_generator import BasePlanGenerator
 from llm_skill_robot.agent.llm_client import ROBOT_PLAN_JSON_SYSTEM_PROMPT
 from llm_skill_robot.agent.mock_plan_generator import PlanGenerationError
-from llm_skill_robot.core.plan import RobotPlan
+from llm_skill_robot.core.plan import PlanStep, RobotPlan
 from llm_skill_robot.safety.hardware_mode import HardwareMode, load_hardware_mode
 
 
@@ -27,12 +27,14 @@ class LLMPlanGenerator(BasePlanGenerator):
         default_acceleration_scale: float = 0.03,
         hardware_mode: HardwareMode | None = None,
         audit_logger: Any = None,
+        require_observe_before_detection: bool = False,
     ):
         self.llm_client = llm_client
         self.default_velocity_scale = default_velocity_scale
         self.default_acceleration_scale = default_acceleration_scale
         self.hardware_mode = hardware_mode or load_hardware_mode()
         self.audit_logger = audit_logger
+        self.require_observe_before_detection = require_observe_before_detection
 
     def generate_plan(
         self,
@@ -47,6 +49,8 @@ class LLMPlanGenerator(BasePlanGenerator):
         )
         response_text = self.llm_client.generate_text(messages)
         plan = self._parse_robot_plan(response_text)
+        if self.require_observe_before_detection:
+            plan = self._ensure_observe_before_detection(plan)
         self._validate_hardware_safe_plan(plan, available_skills)
         if self._full_grasp_supervised_active() and self._is_full_grasp_plan(plan):
             self._audit(
@@ -73,6 +77,8 @@ class LLMPlanGenerator(BasePlanGenerator):
         )
         response_text = self.llm_client.generate_text(messages)
         plan = self._parse_robot_plan(response_text)
+        if self.require_observe_before_detection:
+            plan = self._ensure_observe_before_detection(plan)
         self._validate_hardware_safe_plan(plan, available_skills)
         if self._full_grasp_supervised_active() and self._is_full_grasp_plan(plan):
             self._audit(
@@ -136,6 +142,12 @@ class LLMPlanGenerator(BasePlanGenerator):
                     "review_grasp_candidate",
                 ],
                 "instruction": (
+                    (
+                        "Before every detect_object step, first add a separate "
+                        "move_to_named_target step with target_name=observe. "
+                        if self.require_observe_before_detection else ""
+                    )
+                    +
                     "Legacy planners used the phrases 'detect_object before pick_object' "
                     "and 'pick_object with the same query'; do not follow those direct-pick "
                     "rules in arm-safe hardware mode. detect_object requires a natural-language query "
@@ -368,6 +380,36 @@ class LLMPlanGenerator(BasePlanGenerator):
         if full_grasp_supervised and self._is_full_grasp_plan(plan):
             self._validate_full_grasp_sequence(plan)
 
+    @staticmethod
+    def _is_observe_step(step: Any) -> bool:
+        return (
+            step.skill_id == "move_to_named_target"
+            and (step.parameters.get("target_name") or step.parameters.get("target"))
+            == "observe"
+        )
+
+    def _ensure_observe_before_detection(self, plan: RobotPlan) -> RobotPlan:
+        """Deterministically insert an observe motion before every recognition step."""
+        steps: list[PlanStep] = []
+        for step in plan.steps:
+            if step.skill_id == "detect_object" and (
+                not steps or not self._is_observe_step(steps[-1])
+            ):
+                steps.append(PlanStep(
+                    step_id="0",
+                    skill_id="move_to_named_target",
+                    description="Move to the observe pose before object recognition",
+                    parameters={
+                        "target_name": "observe",
+                        "velocity_scale": self.default_velocity_scale,
+                        "acceleration_scale": self.default_acceleration_scale,
+                    },
+                ))
+            steps.append(step)
+        for index, step in enumerate(steps, start=1):
+            step.step_id = str(index)
+        return RobotPlan(task=plan.task, steps=steps)
+
     def _arm_safe_pick_rules(self) -> dict[str, Any]:
         if self._full_grasp_supervised_active():
             return {
@@ -390,6 +432,10 @@ class LLMPlanGenerator(BasePlanGenerator):
                     "contact close asks YES separately at runtime."
                 ),
                 "required_skill_sequence": [
+                    *(
+                        ['move_to_named_target target_name="observe"']
+                        if self.require_observe_before_detection else []
+                    ),
                     'detect_object query="X"',
                     "build_object_point_cloud object_id=<resolved>",
                     "generate_grasp_pose object_id=<resolved>",
@@ -449,9 +495,9 @@ class LLMPlanGenerator(BasePlanGenerator):
             for step in plan.steps
         )
 
-    @staticmethod
-    def _validate_full_grasp_sequence(plan: RobotPlan) -> None:
+    def _validate_full_grasp_sequence(self, plan: RobotPlan) -> None:
         required = [
+            *(["move_to_named_target"] if self.require_observe_before_detection else []),
             "detect_object",
             "build_object_point_cloud",
             "generate_grasp_pose",
@@ -474,7 +520,7 @@ class LLMPlanGenerator(BasePlanGenerator):
                 "Full supervised grasp plan must use the exact state-machine skill "
                 f"sequence: {', '.join(required)}."
             )
-        close_step = plan.steps[7]
+        close_step = plan.steps[8 if self.require_observe_before_detection else 7]
         if close_step.parameters.get("during_contact") is not True:
             raise PlanGenerationError(
                 "Full supervised grasp close_gripper requires during_contact=true."

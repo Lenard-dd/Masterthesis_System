@@ -72,6 +72,8 @@ class PlanVerifier:
             hardware_mode is not None
             and self._full_grasp_supervised_active(hardware_mode, context)
         )
+        if context.get("require_observe_before_detection"):
+            self._verify_observe_before_detection(plan, reasons)
         sequence_results: list[dict[str, Any]] = []
         if full_grasp_supervised:
             sequence_results = self._verify_full_grasp_sequence(plan, context)
@@ -180,6 +182,29 @@ class PlanVerifier:
                     reason=item.get("reason"),
                 )
         return VerificationResult(decision=decision, reasons=reasons, warnings=warnings)
+
+    @staticmethod
+    def _verify_observe_before_detection(
+        plan: RobotPlan, reasons: list[str]
+    ) -> None:
+        for index, step in enumerate(plan.steps):
+            if step.skill_id != "detect_object":
+                continue
+            previous = plan.steps[index - 1] if index > 0 else None
+            target = (
+                previous.parameters.get("target_name")
+                or previous.parameters.get("target")
+                if previous is not None else None
+            )
+            if (
+                previous is None
+                or previous.skill_id != "move_to_named_target"
+                or target != "observe"
+            ):
+                reasons.append(
+                    f"detect_object step {step.step_id} must be immediately preceded "
+                    "by move_to_named_target(target_name=observe)."
+                )
 
     def _verify_hardware_mode_step(
         self,

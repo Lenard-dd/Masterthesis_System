@@ -219,3 +219,41 @@ def test_prompt_includes_perception_rules_for_object_pose():
     assert "Do not use move_to_named_target for pickup or place actions" in prompt
     assert "red cube" in prompt
     assert "Do not invent object poses" in prompt
+
+
+def test_observe_policy_inserts_observe_before_every_detection():
+    client = FakeLLMClient(
+        [
+            """
+            {
+              "task": "detect twice",
+              "steps": [
+                {"step_id": 1, "skill_id": "detect_object", "description": "first", "parameters": {"query": "cube"}},
+                {"step_id": 2, "skill_id": "open_gripper", "description": "open", "parameters": {}},
+                {"step_id": 3, "skill_id": "detect_object", "description": "second", "parameters": {"query": "cube"}}
+              ]
+            }
+            """
+        ]
+    )
+    generator = LLMPlanGenerator(
+        client,
+        require_observe_before_detection=True,
+    )
+
+    plan = generator.generate_plan(
+        "detect twice",
+        available_skills=["move_to_named_target", "detect_object", "open_gripper"],
+    )
+
+    assert [step.skill_id for step in plan.steps] == [
+        "move_to_named_target",
+        "detect_object",
+        "open_gripper",
+        "move_to_named_target",
+        "detect_object",
+    ]
+    assert plan.steps[0].parameters["target_name"] == "observe"
+    assert plan.steps[3].parameters["target_name"] == "observe"
+    assert [step.step_id for step in plan.steps] == ["1", "2", "3", "4", "5"]
+    assert "Before every detect_object step" in client.messages[0][1]["content"]
