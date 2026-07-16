@@ -2,6 +2,13 @@ skill_id: "close_gripper"
 name: "Close Gripper"
 description: "Safely close the Robotiq 2F-140 to a bounded width; real hardware requires trusted human confirmation"
 parameters:
+  - name: "object_id"
+    type: "string"
+    required: false
+  - name: "during_contact"
+    type: "bool"
+    required: false
+    default: false
   - name: "width_m"
     type: "float"
     required: false

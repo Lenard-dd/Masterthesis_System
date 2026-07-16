@@ -26,11 +26,13 @@ class LLMPlanGenerator(BasePlanGenerator):
         default_velocity_scale: float = 0.03,
         default_acceleration_scale: float = 0.03,
         hardware_mode: HardwareMode | None = None,
+        audit_logger: Any = None,
     ):
         self.llm_client = llm_client
         self.default_velocity_scale = default_velocity_scale
         self.default_acceleration_scale = default_acceleration_scale
         self.hardware_mode = hardware_mode or load_hardware_mode()
+        self.audit_logger = audit_logger
 
     def generate_plan(
         self,
@@ -46,6 +48,12 @@ class LLMPlanGenerator(BasePlanGenerator):
         response_text = self.llm_client.generate_text(messages)
         plan = self._parse_robot_plan(response_text)
         self._validate_hardware_safe_plan(plan, available_skills)
+        if self._full_grasp_supervised_active() and self._is_full_grasp_plan(plan):
+            self._audit(
+                "llm_full_grasp_plan_generated",
+                task=plan.task,
+                skill_ids=[step.skill_id for step in plan.steps],
+            )
         return plan
 
     def repair_plan(
@@ -66,6 +74,13 @@ class LLMPlanGenerator(BasePlanGenerator):
         response_text = self.llm_client.generate_text(messages)
         plan = self._parse_robot_plan(response_text)
         self._validate_hardware_safe_plan(plan, available_skills)
+        if self._full_grasp_supervised_active() and self._is_full_grasp_plan(plan):
+            self._audit(
+                "llm_full_grasp_plan_generated",
+                task=plan.task,
+                skill_ids=[step.skill_id for step in plan.steps],
+                repaired=True,
+            )
         return plan
 
     def _build_messages(
@@ -139,41 +154,7 @@ class LLMPlanGenerator(BasePlanGenerator):
                     "and must not use pick_object."
                 ),
             },
-            "arm_safe_pick_rules": {
-                "mode": self.hardware_mode.mode,
-                "real_arm_execution": "RESTRICTED_STAGED_ONLY",
-                "direct_pick_object": "BLOCKED",
-                "approach_grasp": "BLOCKED",
-                "lift_object": "BLOCKED",
-                "close_gripper_on_object": "BLOCKED",
-                "raw_ros_commands": "BLOCKED",
-                "raw_gripper_driver_commands": "BLOCKED",
-                "instruction": (
-                    "In real_camera_real_gripper_restricted_arm mode, never generate "
-                    "pick_object, approach_grasp, lift_object, close_gripper on an "
-                    "object, or any autonomous pick sequence. For 'pick the X', "
-                    "generate only staged perception, candidate review, optional "
-                    "confirmed gripper opening, restricted pregrasp motion, and "
-                    "confirmed candidate-width test. Human approval is trusted "
-                    "runtime input and must never be invented as a plan parameter."
-                ),
-                "safe_staged_plan": [
-                    "move_to_named_target observe (plan or restricted execution only)",
-                    "detect_object query=\"X\"",
-                    "build_object_point_cloud object_id=<resolved>",
-                    "generate_grasp_pose object_id=<resolved>",
-                    "review_grasp_candidate object_id=<resolved>",
-                    "open_gripper (only with exact YES confirmation requested at runtime)",
-                    "move_to_pregrasp object_id=<resolved> (only with exact EXECUTE confirmation requested at runtime)",
-                    "test_gripper_width object_id=<resolved> (only with exact YES confirmation requested at runtime)",
-                ],
-                "compatibility_note": (
-                    "If a staged schema explicitly uses set_gripper_width, its "
-                    "width_m must be resolved from candidate.gripper_width_m at "
-                    "runtime and the executor must require exact YES. Prefer "
-                    "test_gripper_width so the LLM does not invent a width."
-                ),
-            },
+            "arm_safe_pick_rules": self._arm_safe_pick_rules(),
             "output_schema": {
                 "task": "string",
                 "steps": [
@@ -303,16 +284,25 @@ class LLMPlanGenerator(BasePlanGenerator):
             "lift_object",
             "execute_pick_sequence",
         }
+        full_grasp_forbidden_skill_ids = forbidden_skill_ids | {
+            "execute_pick_sequence",
+            "execute_full_grasp",
+            "execute_full_grasp_sequence",
+            "batch_execute_grasp",
+        }
         raw_parameter_names = {
             "ros_command",
             "command_topic",
             "action_name",
             "service_name",
             "driver_command",
+            "trajectory",
+            "joint_trajectory",
+            "controller_command",
         }
+        hardware_restricted = self._restricted_real_motion_active()
+        full_grasp_supervised = self._full_grasp_supervised_active()
         for step in plan.steps:
-            hardware_restricted = self._restricted_real_motion_active()
-            full_grasp_supervised = self._full_grasp_supervised_active()
             hardware_arm_safe = self.hardware_mode.mode in {
                 "real_camera_real_gripper_arm_safe",
                 "real_camera_real_gripper_restricted_arm",
@@ -320,7 +310,9 @@ class LLMPlanGenerator(BasePlanGenerator):
             }
             blocked_ids = (
                 restricted_forbidden_skill_ids
-                if hardware_restricted or full_grasp_supervised
+                if hardware_restricted
+                else full_grasp_forbidden_skill_ids
+                if full_grasp_supervised
                 else forbidden_skill_ids
             )
             if hardware_arm_safe and step.skill_id in blocked_ids:
@@ -344,7 +336,7 @@ class LLMPlanGenerator(BasePlanGenerator):
             unsafe_text = json.dumps(
                 {"description": step.description, "parameters": step.parameters}
             ).lower()
-            if (hardware_restricted or full_grasp_supervised) and step.skill_id == "close_gripper":
+            if hardware_restricted and step.skill_id == "close_gripper":
                 if any(
                     marker in unsafe_text
                     for marker in ("during_contact", "contact", "on object", "object")
@@ -352,6 +344,15 @@ class LLMPlanGenerator(BasePlanGenerator):
                     raise PlanGenerationError(
                         "LLM generated hardware-mode-blocked close_gripper during contact."
                     )
+            if full_grasp_supervised and step.skill_id == "close_gripper":
+                if step.parameters.get("during_contact") is not True:
+                    raise PlanGenerationError(
+                        "Full supervised grasp contact close requires during_contact=true."
+                    )
+            if full_grasp_supervised and self._is_batch_request(step):
+                raise PlanGenerationError(
+                    "LLM requested batch execution or one confirmation for multiple real steps."
+                )
             if any(
                 marker in unsafe_text
                 for marker in (
@@ -363,6 +364,125 @@ class LLMPlanGenerator(BasePlanGenerator):
                 )
             ):
                 raise PlanGenerationError("LLM generated a raw ROS or driver command.")
+
+        if full_grasp_supervised and self._is_full_grasp_plan(plan):
+            self._validate_full_grasp_sequence(plan)
+
+    def _arm_safe_pick_rules(self) -> dict[str, Any]:
+        if self._full_grasp_supervised_active():
+            return {
+                "mode": "full_grasp_supervised",
+                "real_arm_execution": "STATE_MACHINE_AND_PER_STEP_CONFIRMATION_ONLY",
+                "direct_pick_object": "BLOCKED",
+                "raw_ros_commands": "BLOCKED",
+                "raw_gripper_driver_commands": "BLOCKED",
+                "batch_confirmation": "BLOCKED",
+                "compatibility_note": (
+                    "This replaces the earlier real_camera_real_gripper_restricted_arm "
+                    "pick policy; restricted_real_motion still blocks approach_grasp."
+                ),
+                "instruction": (
+                    "For 'pick the X', generate exactly the staged full-grasp skill "
+                    "sequence below. The runtime FullGraspStateMachine, never the LLM, "
+                    "controls execution order. Never include confirmation values, raw "
+                    "ROS commands, trajectories, controller calls, retries, or a batch "
+                    "execution request. Every arm step asks EXECUTE separately and the "
+                    "contact close asks YES separately at runtime."
+                ),
+                "required_skill_sequence": [
+                    'detect_object query="X"',
+                    "build_object_point_cloud object_id=<resolved>",
+                    "generate_grasp_pose object_id=<resolved>",
+                    "review_grasp_candidate object_id=<resolved>",
+                    "open_gripper",
+                    "move_to_pregrasp object_id=<resolved>",
+                    "approach_grasp object_id=<resolved>",
+                    "close_gripper object_id=<resolved> during_contact=true",
+                    "retreat_grasp object_id=<resolved>",
+                    "verify_grasp object_id=<resolved>",
+                ],
+            }
+        return {
+            "mode": self.hardware_mode.mode,
+            "real_arm_execution": "RESTRICTED_STAGED_ONLY",
+            "direct_pick_object": "BLOCKED",
+            "approach_grasp": "BLOCKED",
+            "lift_object": "BLOCKED",
+            "close_gripper_on_object": "BLOCKED",
+            "raw_ros_commands": "BLOCKED",
+            "raw_gripper_driver_commands": "BLOCKED",
+            "instruction": (
+                "In real_camera_real_gripper_restricted_arm mode, never generate "
+                "pick_object, approach_grasp, lift_object, close_gripper on an "
+                "object, or any autonomous pick sequence."
+            ),
+        }
+
+    @staticmethod
+    def _is_batch_request(step: Any) -> bool:
+        if step.skill_id in {
+            "execute_pick_sequence",
+            "execute_full_grasp",
+            "execute_full_grasp_sequence",
+            "batch_execute_grasp",
+        }:
+            return True
+        if any(
+            step.parameters.get(key) is True
+            for key in ("execute_all", "batch_execute", "confirm_all", "single_confirmation")
+        ):
+            return True
+        text = f"{step.description} {step.parameters}".lower()
+        return any(
+            marker in text
+            for marker in ("one confirmation", "single confirmation", "execute all steps")
+        )
+
+    @staticmethod
+    def _is_full_grasp_plan(plan: RobotPlan) -> bool:
+        return any(
+            step.skill_id in {"approach_grasp", "retreat_grasp", "verify_grasp"}
+            or (
+                step.skill_id == "close_gripper"
+                and step.parameters.get("during_contact") is True
+            )
+            for step in plan.steps
+        )
+
+    @staticmethod
+    def _validate_full_grasp_sequence(plan: RobotPlan) -> None:
+        required = [
+            "detect_object",
+            "build_object_point_cloud",
+            "generate_grasp_pose",
+            "review_grasp_candidate",
+            "open_gripper",
+            "move_to_pregrasp",
+            "approach_grasp",
+            "close_gripper",
+            "retreat_grasp",
+            "verify_grasp",
+        ]
+        actual = [step.skill_id for step in plan.steps]
+        if actual != required:
+            if len(actual) == 1:
+                raise PlanGenerationError(
+                    "LLM generated hardware-mode-blocked skill_id: "
+                    f"{actual[0]}; the full-grasp state-machine prerequisites are missing."
+                )
+            raise PlanGenerationError(
+                "Full supervised grasp plan must use the exact state-machine skill "
+                f"sequence: {', '.join(required)}."
+            )
+        close_step = plan.steps[7]
+        if close_step.parameters.get("during_contact") is not True:
+            raise PlanGenerationError(
+                "Full supervised grasp close_gripper requires during_contact=true."
+            )
+
+    def _audit(self, event: str, **fields: Any) -> None:
+        if self.audit_logger and hasattr(self.audit_logger, "log_hardware_safety_event"):
+            self.audit_logger.log_hardware_safety_event(event, **fields)
 
     def _restricted_real_motion_active(self) -> bool:
         return (

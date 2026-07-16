@@ -168,3 +168,55 @@ def test_detect_object_failure_does_not_crash_plan_pipeline():
     assert result["status"] == "FAILED"
     assert "camera pipeline unavailable" in result["message"]
     assert context["scene"].objects == []
+
+
+class _ReadyRGBDCamera:
+    def __init__(self):
+        self.latest_depth_msg = {"image": [[1000]], "encoding": "16UC1"}
+        self.latest_camera_info_msg = {"k": [100.0, 0, 0, 0, 100.0, 0, 0, 0, 1]}
+        self.config = {"depth_frame": "camera_color_optical_frame"}
+        self.node = None
+
+    def _get_latest_depth_image(self):
+        return self.latest_depth_msg
+
+
+class _PointCloudBuilder:
+    def build(self, scene_object, depth_frame, camera_info, frame=None):
+        assert scene_object["object_id"] == "cube_1"
+        assert depth_frame is not None
+        assert camera_info is not None
+        return {
+            "success": True,
+            "status": "SUCCESS",
+            "message": "point cloud built",
+            "point_cloud_path": "/tmp/cube_1.ply",
+            "frame": frame,
+        }
+
+
+def test_build_object_point_cloud_is_dispatched_after_detection():
+    pipeline = PerceptionPipeline()
+    pipeline.backend = _ReadyRGBDCamera()
+    context = {
+        "selected_object": {"object_id": "cube_1", "confidence": 0.9},
+        "resolved_object_id": "cube_1",
+    }
+    step = PlanStep(
+        step_id="2",
+        skill_id="build_object_point_cloud",
+        description="Build point cloud",
+        parameters={"object_id": "<resolved>"},
+    )
+
+    result = execute_non_motion_skill(
+        step,
+        gripper_backend=None,
+        context=context,
+        perception_pipeline=pipeline,
+        point_cloud_builder=_PointCloudBuilder(),
+    )
+
+    assert result["success"] is True
+    assert result["output"]["point_cloud_path"] == "/tmp/cube_1.ply"
+    assert context["point_cloud"]["status"] == "SUCCESS"

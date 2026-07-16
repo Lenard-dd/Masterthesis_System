@@ -11,6 +11,7 @@ from ..safety.hardware_mode import (
     clamp_or_reject_gripper_command,
 )
 from ..safety.real_arm_safety import load_real_arm_safety, validate_motion_summary
+from ..grasping.full_grasp_state_machine import FullGraspStateMachine
 
 
 class PlanVerifier:
@@ -42,6 +43,7 @@ class PlanVerifier:
         skill_library: SkillLibrary,
         config_dir: str = None,
         hardware_mode: HardwareMode | None = None,
+        audit_logger: Any = None,
     ):
         self.skill_library = skill_library
         if config_dir is None:
@@ -50,6 +52,7 @@ class PlanVerifier:
             self.config_dir = Path(config_dir)
         self.robot_capabilities = self.load_robot_capabilities()
         self.hardware_mode = hardware_mode
+        self.audit_logger = audit_logger
 
     def load_robot_capabilities(self) -> Dict[str, Any]:
         """Load robot capabilities from config."""
@@ -61,10 +64,21 @@ class PlanVerifier:
 
     def verify_plan(self, plan: RobotPlan, context: Dict[str, Any] = None) -> VerificationResult:
         """Verify a robot plan against skills and capabilities."""
-        context = context or {}
+        context = dict(context or {})
         reasons = []
         warnings = []
         hardware_mode = self._hardware_mode_from_context(context) or self.hardware_mode
+        full_grasp_supervised = (
+            hardware_mode is not None
+            and self._full_grasp_supervised_active(hardware_mode, context)
+        )
+        sequence_results: list[dict[str, Any]] = []
+        if full_grasp_supervised:
+            sequence_results = self._verify_full_grasp_sequence(plan, context)
+            for item in sequence_results:
+                if not item["allowed"]:
+                    reasons.append(item["reason"])
+            context["_verifying_full_grasp_sequence"] = self._is_full_grasp_plan(plan)
 
         for step in plan.steps:
             skill = self.skill_library.get_skill(step.skill_id)
@@ -150,6 +164,21 @@ class PlanVerifier:
                 warnings.append(status.get("message", "Robot state context has no joint state."))
 
         decision = VerificationDecision.BLOCK if reasons else VerificationDecision.ALLOW
+        if full_grasp_supervised:
+            result_by_step = {str(item["step_id"]): item for item in sequence_results}
+            for step in plan.steps:
+                item = result_by_step.get(str(step.step_id), {"allowed": not reasons})
+                event = (
+                    "llm_step_verified"
+                    if item.get("allowed") and decision == VerificationDecision.ALLOW
+                    else "llm_step_blocked"
+                )
+                self._audit(
+                    event,
+                    step_id=step.step_id,
+                    skill_id=step.skill_id,
+                    reason=item.get("reason"),
+                )
         return VerificationResult(decision=decision, reasons=reasons, warnings=warnings)
 
     def _verify_hardware_mode_step(
@@ -161,6 +190,7 @@ class PlanVerifier:
         warnings: list[str],
     ) -> None:
         restricted_real_motion = self._restricted_real_motion_active(mode, context)
+        full_grasp_supervised = self._full_grasp_supervised_active(mode, context)
         if restricted_real_motion:
             self._verify_restricted_real_motion_step(
                 step, context, reasons
@@ -190,6 +220,10 @@ class PlanVerifier:
                 "move_to_named_target", "move_to_pregrasp"
             }:
                 allowed_requested_modes.add("restricted_real_motion")
+            if full_grasp_supervised and step.skill_id in {
+                "move_to_pregrasp", "approach_grasp", "retreat_grasp"
+            }:
+                allowed_requested_modes.add("full_grasp_supervised")
             if step.skill_id != "move_to_named_target" and requested_mode not in allowed_requested_modes:
                 reasons.append(f"{step.skill_id} may use only a plan-only backend.")
             if requested_mode == "real_robot" and not restricted_real_motion:
@@ -210,7 +244,10 @@ class PlanVerifier:
             elif step.skill_id == "set_gripper_width":
                 reasons.append("set_gripper_width requires a validated width_m.")
 
-            if not self._trusted_confirmation_for_step(step, context):
+            if (
+                not context.get("_verifying_full_grasp_sequence", False)
+                and not self._trusted_confirmation_for_step(step, context)
+            ):
                 reasons.append(
                     f"{step.skill_id} requires exact trusted YES confirmation at execution time."
                 )
@@ -218,18 +255,33 @@ class PlanVerifier:
         later_hardware_stage = step.skill_id in (
             self.CANDIDATE_GRIPPER_SKILLS | self.PLAN_ONLY_ARM_SKILLS
         ) and step.skill_id != "move_to_named_target"
-        if later_hardware_stage and not context.get("grasp_candidate_approved", False):
+        if (
+            later_hardware_stage
+            and not context.get("_verifying_full_grasp_sequence", False)
+            and not context.get("grasp_candidate_approved", False)
+        ):
             reasons.append(
                 f"{step.skill_id} requires a reviewed and human-approved grasp candidate."
             )
 
         raw_keys = {
-            "ros_command", "command_topic", "action_name", "service_name", "driver_command"
+            "ros_command", "command_topic", "action_name", "service_name",
+            "driver_command", "trajectory", "joint_trajectory", "controller_command"
         }.intersection(step.parameters)
         if raw_keys:
             reasons.append(
                 "Raw ROS or gripper driver parameters are forbidden: "
                 + ", ".join(sorted(raw_keys))
+            )
+        unsafe_text = f"{step.description} {step.parameters}".lower()
+        if any(marker in unsafe_text for marker in (
+            "ros2 topic pub", "ros2 action send_goal", "ros2 service call",
+            "/_action/send_goal", "control_msgs/action/grippercommand",
+        )):
+            reasons.append("Raw ROS or gripper driver commands are forbidden.")
+        if self._is_batch_request(step):
+            reasons.append(
+                "Batch execution or one confirmation for multiple real steps is forbidden."
             )
 
     @staticmethod
@@ -249,6 +301,106 @@ class PlanVerifier:
             mode.mode == "real_camera_real_gripper_restricted_arm"
             or getattr(mode.arm, "execution_mode", None) == "restricted_real_motion"
         )
+
+    @staticmethod
+    def _full_grasp_supervised_active(
+        mode: HardwareMode, context: Dict[str, Any] | None = None
+    ) -> bool:
+        requested = (context or {}).get("arm_execution_mode")
+        if requested == "restricted_real_motion":
+            return False
+        if requested == "full_grasp_supervised":
+            return True
+        return (
+            mode.mode == "real_full_grasp_supervised"
+            or getattr(mode.arm, "execution_mode", None) == "full_grasp_supervised"
+        )
+
+    @staticmethod
+    def _is_full_grasp_plan(plan: RobotPlan) -> bool:
+        return any(
+            step.skill_id in {
+                "move_to_pregrasp", "approach_grasp", "retreat_grasp", "verify_grasp"
+            }
+            or (
+                step.skill_id == "close_gripper"
+                and step.parameters.get("during_contact") is True
+            )
+            for step in plan.steps
+        )
+
+    def _verify_full_grasp_sequence(
+        self, plan: RobotPlan, context: Dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Statically simulate the runtime state prerequisites for LLM steps."""
+        machine = context.get("full_grasp_state_machine")
+        if isinstance(machine, FullGraspStateMachine):
+            state = machine.current_state()
+        else:
+            state = str(context.get("full_grasp_state", FullGraspStateMachine.INIT))
+        full_plan = self._is_full_grasp_plan(plan)
+        results: list[dict[str, Any]] = []
+        rules = {
+            "detect_object": (FullGraspStateMachine.INIT, FullGraspStateMachine.OBJECT_DETECTED),
+            "build_object_point_cloud": (FullGraspStateMachine.OBJECT_DETECTED, FullGraspStateMachine.POINT_CLOUD_BUILT),
+            "generate_grasp_pose": (FullGraspStateMachine.POINT_CLOUD_BUILT, FullGraspStateMachine.GRASP_GENERATED),
+            "move_to_pregrasp": (FullGraspStateMachine.GRASP_GENERATED, FullGraspStateMachine.AT_PREGRASP),
+            "approach_grasp": (FullGraspStateMachine.AT_PREGRASP, FullGraspStateMachine.AT_GRASP_POSE),
+            "retreat_grasp": (FullGraspStateMachine.GRIPPER_CLOSED, FullGraspStateMachine.RETREATED),
+            "verify_grasp": (FullGraspStateMachine.RETREATED, FullGraspStateMachine.DONE),
+        }
+        for step in plan.steps:
+            required = next_state = None
+            if step.skill_id == "close_gripper" and self._is_contact_close_step(step):
+                required, next_state = (
+                    FullGraspStateMachine.AT_GRASP_POSE,
+                    FullGraspStateMachine.GRIPPER_CLOSED,
+                )
+            elif full_plan and step.skill_id in rules:
+                required, next_state = rules[step.skill_id]
+            if required is None:
+                results.append({"step_id": step.step_id, "allowed": True})
+                continue
+            if state != required:
+                results.append({
+                    "step_id": step.step_id,
+                    "allowed": False,
+                    "reason": (
+                        f"{step.skill_id} requires FullGraspStateMachine state "
+                        f"{required}; current simulated state is {state}."
+                    ),
+                })
+                continue
+            if step.skill_id == "close_gripper" and step.parameters.get("during_contact") is not True:
+                results.append({
+                    "step_id": step.step_id,
+                    "allowed": False,
+                    "reason": "Contact close requires during_contact=true.",
+                })
+                continue
+            state = next_state
+            results.append({"step_id": step.step_id, "allowed": True, "state": state})
+        return results
+
+    @staticmethod
+    def _is_batch_request(step) -> bool:
+        if step.skill_id in {
+            "execute_pick_sequence", "execute_full_grasp",
+            "execute_full_grasp_sequence", "batch_execute_grasp",
+        }:
+            return True
+        if any(step.parameters.get(key) is True for key in (
+            "execute_all", "batch_execute", "confirm_all", "single_confirmation"
+        )):
+            return True
+        text = f"{step.description} {step.parameters}".lower()
+        return any(marker in text for marker in (
+            "one confirmation", "single confirmation", "execute all steps"
+        ))
+
+    def _audit(self, event: str, **fields: Any) -> None:
+        if self.audit_logger and hasattr(self.audit_logger, "log_hardware_safety_event"):
+            self.audit_logger.log_hardware_safety_event(event, **fields)
 
     def _verify_restricted_real_motion_step(
         self,

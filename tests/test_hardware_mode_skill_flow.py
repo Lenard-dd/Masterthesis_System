@@ -287,6 +287,7 @@ def test_close_gripper_during_contact_is_allowed_only_in_full_supervised_mode():
         context={
             "gripper_confirmations": {"1": "YES"},
             "grasp_candidate_approved": True,
+            "full_grasp_state": "AT_GRASP_POSE",
         },
     )
 

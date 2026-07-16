@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 import sys
+import time
 from typing import Any, Dict, List
 
 import yaml
@@ -23,6 +24,9 @@ from llm_skill_robot.perception.perception_factory import (
     perception_context_from_config,
 )
 from llm_skill_robot.perception.perception_pipeline import PerceptionPipeline
+from llm_skill_robot.perception.object_point_cloud_builder import ObjectPointCloudBuilder
+from llm_skill_robot.grasping.graspgenx_grasp_planner import GraspGenXGraspPlanner
+from llm_skill_robot.grasping.graspgenx_subprocess_adapter import GraspGenXSubprocessAdapter
 from llm_skill_robot.robot.robotiq_2f140_sim_backend import Robotiq2F140SimBackend
 from llm_skill_robot.robot.robotiq_2f140_joint_state_sim import Robotiq2F140JointStateSim
 from llm_skill_robot.robot.ur5_moveit_plan_backend import UR5MoveItPlanBackend
@@ -39,7 +43,8 @@ GRIPPER_SKILL_IDS = {
     "set_gripper_width",
     "get_gripper_state",
 }
-PERCEPTION_SKILL_IDS = {"detect_object"}
+PERCEPTION_SKILL_IDS = {"detect_object", "build_object_point_cloud"}
+GRASP_PLANNING_SKILL_IDS = {"generate_grasp_pose", "review_grasp_candidate"}
 OBJECT_RELATED_SKILL_IDS = {"pick_object", "place_object"}
 
 
@@ -114,6 +119,14 @@ def _load_gripper_joint_mapping_config() -> Dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 
+def _load_grasping_config() -> Dict[str, Any]:
+    config_file = get_config_dir() / "grasping.yaml"
+    if not config_file.exists():
+        return {}
+    with config_file.open("r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
+
+
 def _create_gripper_joint_state_sim(node) -> Robotiq2F140JointStateSim | None:
     config = _load_gripper_joint_mapping_config()
     mapping = config.get("gripper_joint_mapping", {})
@@ -142,9 +155,11 @@ def execute_non_motion_skill(
     gripper_backend: Robotiq2F140SimBackend | None,
     context: Dict[str, Any] | None = None,
     perception_pipeline: PerceptionPipeline | None = None,
+    point_cloud_builder: ObjectPointCloudBuilder | None = None,
+    grasp_planner: GraspGenXGraspPlanner | None = None,
 ) -> Dict[str, Any]:
     context = context if context is not None else {}
-    if step.skill_id in PERCEPTION_SKILL_IDS:
+    if step.skill_id == "detect_object":
         perception_pipeline = perception_pipeline or PerceptionPipeline()
         parameters = dict(step.parameters)
         try:
@@ -164,6 +179,13 @@ def execute_non_motion_skill(
         latest_scene = perception_pipeline.get_latest_scene()
         context["scene"] = latest_scene
         context["perception_available"] = result.get("status") != "NOT_AVAILABLE"
+        if result.get("objects"):
+            selected = max(
+                result["objects"],
+                key=lambda value: float(value.get("confidence", 0.0) or 0.0),
+            )
+            context["selected_object"] = selected
+            context["resolved_object_id"] = selected.get("object_id")
         return {
             "step_id": step.step_id,
             "skill_id": step.skill_id,
@@ -174,6 +196,117 @@ def execute_non_motion_skill(
             "message": result.get("message"),
             "objects": result.get("objects", []),
             "scene": result.get("scene", {}),
+            "output": result,
+        }
+
+    if step.skill_id == "build_object_point_cloud":
+        perception_pipeline = perception_pipeline or PerceptionPipeline()
+        point_cloud_builder = point_cloud_builder or ObjectPointCloudBuilder()
+        selected = _resolve_scene_object(step.parameters.get("object_id"), context)
+        if selected is None:
+            result = {
+                "success": False,
+                "status": "NOT_FOUND",
+                "message": "No detected object is available for point-cloud building.",
+            }
+        else:
+            camera = getattr(perception_pipeline, "backend", None)
+            readiness = _wait_for_point_cloud_inputs(camera)
+            depth_getter = getattr(camera, "_get_latest_depth_image", None)
+            camera_config = getattr(camera, "config", {}) or {}
+            result = point_cloud_builder.build(
+                selected,
+                depth_getter() if callable(depth_getter) else None,
+                getattr(camera, "latest_camera_info_msg", None),
+                frame=(
+                    camera_config.get("depth_frame", "camera_color_optical_frame")
+                    if isinstance(camera_config, dict)
+                    else "camera_color_optical_frame"
+                ),
+            )
+            result.setdefault("camera_readiness", readiness)
+            if not result.get("success") and not readiness.get("ready", False):
+                topics = camera_config if isinstance(camera_config, dict) else {}
+                result["message"] = (
+                    f"{result.get('message', 'Point-cloud building failed.')} "
+                    "RGB-D readiness: "
+                    f"depth_received={readiness.get('depth_received', False)}, "
+                    f"camera_info_received={readiness.get('camera_info_received', False)}; "
+                    f"depth_topic={topics.get('depth_topic', 'unknown')}, "
+                    f"camera_info_topic={topics.get('camera_info_topic', 'unknown')}."
+                )
+        if result.get("success"):
+            context["point_cloud"] = result
+            context["resolved_object_id"] = _object_value(selected, "object_id")
+        return {
+            "step_id": step.step_id,
+            "skill_id": step.skill_id,
+            "parameters": dict(step.parameters),
+            "mode": "rviz_sim",
+            "success": bool(result.get("success", False)),
+            "status": result.get("status", "FAILED"),
+            "message": result.get("message", "Point-cloud building failed."),
+            "output": result,
+        }
+
+    if step.skill_id == "generate_grasp_pose":
+        point_cloud = context.get("point_cloud")
+        point_cloud_path = (
+            point_cloud.get("point_cloud_path")
+            if isinstance(point_cloud, dict)
+            else None
+        )
+        if not point_cloud_path:
+            result = {
+                "success": False,
+                "status": "NOT_AVAILABLE",
+                "message": "Build an object point cloud before generating grasp poses.",
+                "candidates": [],
+            }
+        else:
+            if grasp_planner is None:
+                document = _load_grasping_config()
+                config = document.get("grasping", document)
+                grasp_planner = GraspGenXGraspPlanner(
+                    GraspGenXSubprocessAdapter(
+                        config.get("graspgenx_subprocess", {})
+                    )
+                )
+            result = grasp_planner.generate_candidates(str(point_cloud_path))
+        candidates = result.get("candidates", []) if isinstance(result, dict) else []
+        if candidates:
+            context["grasp_candidates"] = candidates
+            context["selected_grasp_candidate"] = grasp_planner.select_best_candidate(candidates)
+        return {
+            "step_id": step.step_id,
+            "skill_id": step.skill_id,
+            "parameters": dict(step.parameters),
+            "mode": "rviz_sim",
+            "success": bool(candidates),
+            "status": result.get("status", "SUCCESS" if candidates else "FAILED"),
+            "message": result.get("message", f"Generated {len(candidates)} grasp candidate(s)."),
+            "output": result,
+        }
+
+    if step.skill_id == "review_grasp_candidate":
+        candidate = context.get("selected_grasp_candidate")
+        result = {
+            "success": candidate is not None,
+            "status": "SUCCESS" if candidate is not None else "NOT_AVAILABLE",
+            "message": (
+                "Selected grasp candidate is available for RViz review."
+                if candidate is not None
+                else "No generated grasp candidate is available for review."
+            ),
+            "candidate": candidate,
+        }
+        context["grasp_candidate_approved"] = candidate is not None
+        return {
+            "step_id": step.step_id,
+            "skill_id": step.skill_id,
+            "parameters": dict(step.parameters),
+            "mode": "rviz_sim",
+            **result,
             "output": result,
         }
 
@@ -208,6 +341,64 @@ def execute_non_motion_skill(
     }
 
 
+def _object_value(value: Any, name: str, default: Any = None) -> Any:
+    return value.get(name, default) if isinstance(value, dict) else getattr(value, name, default)
+
+
+def _resolve_scene_object(object_id: Any, context: Dict[str, Any]) -> Any | None:
+    selected = context.get("selected_object")
+    resolved_id = context.get("resolved_object_id")
+    requested = str(object_id or "")
+    if requested == "<resolved>":
+        requested = str(resolved_id or "")
+    if selected is not None and (
+        not requested or str(_object_value(selected, "object_id", "")) == requested
+    ):
+        return selected
+    scene = context.get("scene")
+    objects = _object_value(scene, "objects", []) or []
+    if requested:
+        for value in objects:
+            if str(_object_value(value, "object_id", "")) == requested:
+                return value
+    return max(
+        objects,
+        key=lambda value: float(_object_value(value, "confidence", 0.0) or 0.0),
+        default=None,
+    )
+
+
+def _wait_for_point_cloud_inputs(camera: Any, timeout_sec: float = 5.0) -> Dict[str, Any]:
+    """Spin long enough for aligned depth and CameraInfo after RGB detection."""
+    if camera is None:
+        return {"ready": False, "depth_received": False, "camera_info_received": False}
+    node = getattr(camera, "node", None)
+    deadline = time.monotonic() + max(0.0, float(timeout_sec))
+    while time.monotonic() < deadline:
+        depth_ready = getattr(camera, "latest_depth_msg", None) is not None
+        info_ready = getattr(camera, "latest_camera_info_msg", None) is not None
+        if depth_ready and info_ready:
+            return {
+                "ready": True,
+                "depth_received": True,
+                "camera_info_received": True,
+            }
+        if node is not None:
+            try:
+                import rclpy
+
+                rclpy.spin_once(node, timeout_sec=0.05)
+                continue
+            except Exception:
+                pass
+        time.sleep(0.05)
+    return {
+        "ready": False,
+        "depth_received": getattr(camera, "latest_depth_msg", None) is not None,
+        "camera_info_received": getattr(camera, "latest_camera_info_msg", None) is not None,
+    }
+
+
 def _print_gripper_step_result(result: Dict[str, Any]) -> None:
     output = result.get("output", {})
     print("\nGripper Step:")
@@ -228,6 +419,14 @@ def _print_perception_step_result(result: Dict[str, Any]) -> None:
     print("\nPerception Step:")
     print(f"Query: {parameters.get('query')}")
     print(f"Status: {result.get('status')}")
+    print(f"Message: {result.get('message')}")
+
+
+def _print_staged_grasp_step_result(result: Dict[str, Any]) -> None:
+    print("\nStaged Grasp Step:")
+    print(f"Skill: {result.get('skill_id')}")
+    print(f"Status: {result.get('status', 'UNKNOWN')}")
+    print(f"Result: {'SUCCESS' if result.get('success') else 'FAILED'}")
     print(f"Message: {result.get('message')}")
 
 
@@ -591,6 +790,16 @@ def main() -> None:
             node=node,
             config=perception_config,
         )
+        grasping_document = _load_grasping_config()
+        grasping_config = grasping_document.get("grasping", grasping_document)
+        point_cloud_builder = ObjectPointCloudBuilder(
+            grasping_config.get("point_cloud", {})
+        )
+        grasp_planner = GraspGenXGraspPlanner(
+            GraspGenXSubprocessAdapter(
+                grasping_config.get("graspgenx_subprocess", {})
+            )
+        )
         execution_context: Dict[str, Any] = {
             "scene": perception_pipeline.get_latest_scene(),
             "perception_available": False,
@@ -648,10 +857,25 @@ def main() -> None:
                     gripper_backend,
                     context=execution_context,
                     perception_pipeline=perception_pipeline,
+                    point_cloud_builder=point_cloud_builder,
+                    grasp_planner=grasp_planner,
                 )
                 if step.skill_id in PERCEPTION_SKILL_IDS:
                     _print_perception_step_result(result)
                     _audit_perception_result(audit_logger, step, result)
+                elif step.skill_id in GRASP_PLANNING_SKILL_IDS:
+                    _print_staged_grasp_step_result(result)
+                    _audit_event(
+                        audit_logger,
+                        "staged_grasp_skill_executed",
+                        {
+                            "step_id": step.step_id,
+                            "skill_id": step.skill_id,
+                            "decision": "SUCCESS" if result["success"] else "FAILED",
+                            "message": result["message"],
+                            "result": result,
+                        },
+                    )
                 else:
                     _print_gripper_step_result(result)
                     _audit_event(
@@ -671,7 +895,7 @@ def main() -> None:
             step_results.append(result)
             if (
                 not result.get("success", False)
-                and step.skill_id not in PERCEPTION_SKILL_IDS
+                and step.skill_id != "detect_object"
             ):
                 break
 
