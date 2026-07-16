@@ -23,7 +23,7 @@ tabletop_safety:
   # while moving from open to closed. Back the final target away by 40 mm:
   # 25 mm kinematic compensation plus approximately 15 mm residual clearance.
   # All corrected poses are replanned and revalidated.
-  grasp_contact_backoff_m: 0.035
+  grasp_contact_backoff_m: 0.030
 
   # Measured open-to-closed fingertip travel along the forward approach axis.
   # Safety validation checks the endpoint of this sweep, including tilted
