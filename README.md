@@ -597,7 +597,7 @@ The test detects an object, selects a GraspGenX candidate, prints its `candidate
 
 ## Unified Restricted Real Hardware Demo
 
-Use this menu-driven demo for incremental lab testing with the real D435i, SAM3, GraspGenX, real Robotiq gripper, and restricted real UR5 motion:
+Use this menu-driven demo for incremental lab testing with the real D435i, SAM3, GraspGenX, real Robotiq gripper, and fully supervised real UR5 grasp motions:
 
 ```bash
 cd ~/dev_ws
@@ -616,7 +616,7 @@ Recommended launch sequence:
 5. Run `ros2 run llm_skill_robot ros-check-real-gripper`.
 6. Run `ros2 run llm_skill_robot ros-restricted-real-hw-demo`.
 
-The menu supports status checks, safe named-target moves, object detection, point-cloud building, GraspGenX candidate generation, candidate review, gripper open, UR5 move-to-pregrasp, candidate-width gripper test, and return to `safe_home`. It intentionally has no `approach_grasp`, no contact close, no lift, and no full `pick_object`. Every real arm motion requires exact `EXECUTE`; every real gripper command requires exact `YES`; each action is logged to `restricted_real_hw_demo_audit.log`.
+The menu supports status checks, safe named-target moves, object detection, point-cloud building, GraspGenX candidate generation, candidate review, gripper open, UR5 move-to-pregrasp, candidate-width gripper test, `approach_grasp`, contact-close, `retreat_grasp`, and return to `safe_home`. It never offers a batch pick command: approach is available only after pregrasp, contact-close only after approach, and retreat only after a successful contact-close. Each approach and retreat shows its trajectory review and requires a fresh exact `EXECUTE`; every gripper command requires exact `YES`; each action is logged to `restricted_real_hw_demo_audit.log`.
 
 ## ROS Verification Demo
 

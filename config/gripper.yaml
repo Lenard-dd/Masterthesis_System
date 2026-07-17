@@ -18,6 +18,11 @@ gripper:
     state_message_type: std_msgs/msg/Float32
     action_name: /gripper_controller/gripper_cmd
     service_name: /set_gripper_distance
+    # Keep the proven GripperCommand action for open/width commands.  The real
+    # Robotiq communication node exposes this dedicated zero-request service
+    # for an object-contact close, avoiding action position-unit ambiguity.
+    contact_close_interface_type: service_close_gripper
+    contact_close_service_name: /close_gripper
     width_unit: meters
     action_position_unit: joint_radians
     state_unit: joint_radians

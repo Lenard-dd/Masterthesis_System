@@ -107,6 +107,23 @@ def test_contact_close_yes_sends_through_mocked_driver():
     assert result["output"]["mode"] == "real_grasp_contact_close"
 
 
+def test_contact_close_uses_configured_native_close_service():
+    backend = _backend()
+    backend.driver_config["contact_close_interface_type"] = "service_close_gripper"
+    sent = []
+    backend._send_contact_close_service = lambda command: (
+        sent.append(command) or _successful_driver(**command)
+    )
+    backend._send_driver_command = lambda **_command: (_ for _ in ()).throw(
+        AssertionError("contact close should not use the generic action adapter")
+    )
+
+    result = backend.close_for_grasp(confirmation="YES")
+
+    assert result["success"] is True
+    assert sent == [{"width_m": 0.02, "speed_mps": 0.02, "force_N": 10.0}]
+
+
 def test_contact_close_reports_unavailable_feedback_honestly():
     backend = _backend()
     backend._send_driver_command = _successful_driver

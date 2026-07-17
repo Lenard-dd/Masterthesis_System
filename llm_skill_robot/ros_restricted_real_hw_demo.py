@@ -9,6 +9,7 @@ import sys
 from typing import Any
 
 from llm_skill_robot.core.audit_logger import AuditLogger
+from llm_skill_robot.grasping.grasp_execution_backend import GraspExecutionBackend
 from llm_skill_robot.grasping.graspgenx_grasp_planner import GraspGenXGraspPlanner
 from llm_skill_robot.grasping.graspgenx_subprocess_adapter import GraspGenXSubprocessAdapter
 from llm_skill_robot.perception.object_point_cloud_builder import ObjectPointCloudBuilder
@@ -21,6 +22,11 @@ from llm_skill_robot.ros_graspgenx_gripper_width_test import (
     _candidate_value,
     _load_yaml,
     _select_highest_confidence,
+)
+from llm_skill_robot.ros_graspgenx_plan_only_demo import (
+    moveit_stage_planning_kwargs,
+    planning_variant_kwargs,
+    prepare_candidate_preview,
 )
 from llm_skill_robot.ros_graspgenx_pregrasp_real_demo import (
     PregraspRealDemoController,
@@ -51,10 +57,11 @@ from llm_skill_robot.safety.real_arm_safety import (
     RealArmSafetyConfig,
     load_real_arm_safety,
     print_real_arm_safety,
+    validate_contact_close_allowed,
+    validate_full_grasp_step,
+    validate_motion_summary,
 )
-
-
-FORBIDDEN_MENU_TERMS = ("approach_grasp", "close_gripper", "lift_object", "pick_object")
+from llm_skill_robot.safety.tabletop_safety import TabletopSafety
 
 
 @dataclass
@@ -74,6 +81,10 @@ class RestrictedRealDemoState:
     selected_grasp_plan: PregraspSelection | None = None
     last_planned_trajectory: LastMotionPlan | None = None
     candidate_width_command: dict[str, float] | None = None
+    grasp_plan: dict[str, Any] | None = None
+    at_pregrasp: bool = False
+    at_grasp_pose: bool = False
+    gripper_closed: bool = False
 
 
 class RestrictedRealHardwareDemoController:
@@ -93,6 +104,7 @@ class RestrictedRealHardwareDemoController:
         gripper_config: dict | None = None,
         transformer=None,
         audit_logger: AuditLogger | None = None,
+        tabletop_safety: TabletopSafety | None = None,
     ):
         self.hardware_mode = hardware_mode
         self.real_arm_safety = real_arm_safety
@@ -105,6 +117,7 @@ class RestrictedRealHardwareDemoController:
         self.gripper_config = gripper_config or {}
         self.transformer = transformer
         self.audit_logger = audit_logger
+        self.tabletop_safety = tabletop_safety
         self.state = RestrictedRealDemoState()
         self.pregrasp_controller = PregraspRealDemoController(
             hardware_mode=hardware_mode,
@@ -118,6 +131,16 @@ class RestrictedRealHardwareDemoController:
             grasping_config=grasping_config,
             gripper_config=gripper_config,
             audit_logger=audit_logger,
+        )
+        self.grasp_motion = GraspExecutionBackend(
+            moveit_backend,
+            real_arm_safety,
+            audit_logger=audit_logger,
+            tabletop_safety=tabletop_safety,
+            review_approval_provider=lambda _summary: (
+                input("Approve the reviewed trajectory preview? Type YES:\n> ").strip()
+                == "YES"
+            ),
         )
 
     def detect_object(self, query: str) -> DemoActionResult:
@@ -135,6 +158,7 @@ class RestrictedRealHardwareDemoController:
         self.state.selected_grasp_plan = None
         self.state.last_planned_trajectory = None
         self.state.candidate_width_command = None
+        self._reset_grasp_execution_state()
         self._audit("real_camera_used", real_camera_used=True, query=query.strip())
         return DemoActionResult(True, "SUCCESS", "Object detected.", {"object": selected})
 
@@ -151,6 +175,7 @@ class RestrictedRealHardwareDemoController:
         self.state.selected_grasp_plan = None
         self.state.last_planned_trajectory = None
         self.state.candidate_width_command = None
+        self._reset_grasp_execution_state()
         self._audit(
             "restricted_real_hw_point_cloud_built",
             point_cloud_path=point_cloud.get("point_cloud_path"),
@@ -168,6 +193,7 @@ class RestrictedRealHardwareDemoController:
         self.state.selected_grasp_plan = None
         self.state.last_planned_trajectory = None
         self.state.candidate_width_command = None
+        self._reset_grasp_execution_state()
         self._audit("restricted_real_hw_grasp_candidates_generated", candidate_count=len(candidates))
         return DemoActionResult(
             True,
@@ -189,20 +215,57 @@ class RestrictedRealHardwareDemoController:
             return self._blocked("No candidate satisfies the configured grasp preferences.")
         selection = None
         selected_preferred_item = None
+        full_grasp_plan = None
+        screening_attempts: list[dict[str, Any]] = []
         for item in preferred:
-            selection = self.pregrasp_controller.select_restricted_pregrasp_plan(
+            candidate = item["candidate"]
+            candidate_selection = self.pregrasp_controller.select_restricted_pregrasp_plan(
                 [item["candidate"]],
                 self.state.point_cloud,
             )
-            if selection is not None:
-                selected_preferred_item = item
-                break
+            if candidate_selection is None:
+                screening_attempts.append({
+                    "candidate_id": _candidate_value(candidate, "candidate_id", "unknown"),
+                    "stage": "pregrasp",
+                    "accepted": False,
+                    "reason": "No safe reachable pregrasp trajectory.",
+                })
+                continue
+            try:
+                candidate_grasp_plan = self._build_full_grasp_plan(candidate_selection.candidate)
+            except (KeyError, TypeError, ValueError) as exc:
+                screening_attempts.append({
+                    "candidate_id": _candidate_value(candidate, "candidate_id", "unknown"),
+                    "stage": "pose_preparation",
+                    "accepted": False,
+                    "reason": str(exc),
+                })
+                continue
+            full_check = self._screen_grasp_and_retreat_targets(
+                candidate_grasp_plan, candidate_selection.variant
+            )
+            screening_attempts.extend(full_check["attempts"])
+            if not full_check["allowed"]:
+                continue
+            selection = candidate_selection
+            selected_preferred_item = item
+            full_grasp_plan = candidate_grasp_plan
+            break
         if selection is None:
-            return self._blocked("No candidate produced a safe reachable pregrasp.")
+            self._audit("full_grasp_candidate_screening_failed", attempts=screening_attempts)
+            return self._blocked("No candidate produced safe reachable pregrasp, grasp, and retreat trajectories.")
         width_command = selected_preferred_item["command"]
         self.state.selected_grasp_plan = selection
         self.state.last_planned_trajectory = selection.plan
         self.state.candidate_width_command = width_command
+        self.state.grasp_plan = full_grasp_plan
+        self._configure_full_grasp_motion_planning(selection.variant)
+        self._audit(
+            "full_grasp_candidate_screening",
+            selected_candidate_id=self.state.grasp_plan["candidate_id"],
+            selected_variant=selection.variant,
+            attempts=screening_attempts,
+        )
         print_selected_candidate(selection.candidate)
         preference = grasp_preference_score(
             selection.candidate,
@@ -259,6 +322,44 @@ class RestrictedRealHardwareDemoController:
         )
         return self._result_from_backend(result)
 
+    def approach_grasp(
+        self, confirmation: str | None = None, trajectory_review_approved: bool | None = None
+    ) -> DemoActionResult:
+        if not self.state.at_pregrasp:
+            return self._blocked("Move to pregrasp before approaching the grasp pose.")
+        result = self._execute_full_grasp_motion(
+            "approach_grasp", confirmation, trajectory_review_approved
+        )
+        if result.success:
+            self.state.at_grasp_pose = True
+        return result
+
+    def close_real_gripper_for_grasp(self, confirmation: str | None = None) -> DemoActionResult:
+        if not self.state.at_grasp_pose:
+            return self._blocked("Approach the grasp pose before closing on the object.")
+        allowed = validate_contact_close_allowed(self.real_arm_safety)
+        if not allowed["allowed"]:
+            return self._blocked(allowed["reason"])
+        if confirmation is None:
+            confirmation = input("Type YES to close the REAL gripper on the object:\n> ").strip()
+        if not confirmation_is_yes(confirmation):
+            self._audit("real_gripper_step_requires_confirmation", real_gripper_step_requires_confirmation=True)
+            return DemoActionResult(False, "CANCELLED", "Exact YES confirmation is required.")
+        result = self.gripper_backend.close_for_grasp(confirmation=confirmation)
+        outcome = self._gripper_result(result, "Real grasp contact-close command completed.")
+        if outcome.success:
+            self.state.gripper_closed = True
+        return outcome
+
+    def retreat_grasp(
+        self, confirmation: str | None = None, trajectory_review_approved: bool | None = None
+    ) -> DemoActionResult:
+        if not self.state.gripper_closed:
+            return self._blocked("Close the gripper on the object before retreating.")
+        return self._execute_full_grasp_motion(
+            "retreat_grasp", confirmation, trajectory_review_approved
+        )
+
     def open_real_gripper(self, confirmation: str | None = None) -> DemoActionResult:
         if confirmation is None:
             confirmation = input("Open REAL gripper? Type YES:\n> ").strip()
@@ -307,7 +408,12 @@ class RestrictedRealHardwareDemoController:
             execution_success=bool(result.get("success")),
             message=result.get("message"),
         )
-        return self._result_from_backend(result)
+        outcome = self._result_from_backend(result)
+        if outcome.success:
+            self.state.at_pregrasp = True
+            self.state.at_grasp_pose = False
+            self.state.gripper_closed = False
+        return outcome
 
     def set_real_gripper_to_candidate_width(
         self,
@@ -338,11 +444,6 @@ class RestrictedRealHardwareDemoController:
         result = getter()
         return self._result_from_backend(result)
 
-    def block_forbidden_internal_action(self, action_name: str) -> DemoActionResult:
-        if action_name in FORBIDDEN_MENU_TERMS:
-            return self._blocked_forbidden_action(action_name)
-        return DemoActionResult(False, "UNKNOWN", f"Unknown internal action {action_name}.")
-
     def state_summary(self) -> dict[str, Any]:
         selection = self.state.selected_grasp_plan
         return {
@@ -365,7 +466,154 @@ class RestrictedRealHardwareDemoController:
             "candidate_width_m": (
                 self.state.candidate_width_command or {}
             ).get("width_m"),
+            "full_grasp_ready": self.state.grasp_plan is not None,
+            "at_pregrasp": self.state.at_pregrasp,
+            "at_grasp_pose": self.state.at_grasp_pose,
+            "gripper_closed": self.state.gripper_closed,
         }
+
+    def _execute_full_grasp_motion(
+        self, skill_id: str, confirmation: str | None, trajectory_review_approved: bool | None
+    ) -> DemoActionResult:
+        if self.state.selected_object is None or self.state.grasp_plan is None:
+            return self._blocked("Review a valid GraspPlan before executing this motion.")
+        object_id = str(_candidate_value(self.state.selected_object, "object_id", ""))
+        method = getattr(self.grasp_motion, skill_id)
+        result = method(
+            object_id,
+            self.state.grasp_plan,
+            confirmation=confirmation,
+            trajectory_review_approved=trajectory_review_approved,
+        )
+        return self._result_from_backend(result)
+
+    def _reset_grasp_execution_state(self) -> None:
+        self.state.grasp_plan = None
+        self.state.at_pregrasp = False
+        self.state.at_grasp_pose = False
+        self.state.gripper_closed = False
+
+    def _build_full_grasp_plan(self, candidate: Any) -> dict[str, Any]:
+        poses = prepare_candidate_preview(
+            candidate,
+            self.state.point_cloud,
+            self.grasping_config.get("plan_only_preview", {}),
+            "base_link",
+            self.transformer,
+        )
+        if self.tabletop_safety is not None:
+            poses = self.tabletop_safety.apply_grasp_contact_backoff(poses)
+            if self.tabletop_safety.grasp_contact_backoff_m > 0.0:
+                self._audit(
+                    "grasp_contact_backoff_applied",
+                    distance_m=self.tabletop_safety.grasp_contact_backoff_m,
+                    direction="toward_pregrasp_along_approach_axis",
+                )
+        return {
+            "pregrasp_pose": poses["pregrasp"],
+            "grasp_pose": poses["grasp"],
+            "retreat_pose": poses["retreat"],
+            "grasp_score": float(_candidate_value(candidate, "score", 0.0)),
+            "candidate_id": _candidate_value(candidate, "candidate_id", "unknown"),
+        }
+
+    def _screen_grasp_and_retreat_targets(
+        self, grasp_plan: dict[str, Any], selected_variant: str
+    ) -> dict[str, Any]:
+        """Require plan-only IK for the same grasp and retreat stages as full demo."""
+        preview = self.grasping_config.get("plan_only_preview", {}) or {}
+        screening = preview.get("candidate_screening", {}) or {}
+        velocity, acceleration = self._restricted_scales()
+        variant_options = (
+            planning_variant_kwargs(selected_variant, screening)
+            if selected_variant in {"full_pose", "relaxed_orientation", "position_only"}
+            else {}
+        )
+        checks = (
+            ("approach_grasp", "grasp_pose", "pregrasp_pose", "grasp", {
+                **moveit_stage_planning_kwargs(preview, "grasp"), **variant_options,
+            }),
+            ("retreat_grasp", "retreat_pose", "grasp_pose", "retreat",
+             moveit_stage_planning_kwargs(preview, "retreat")),
+        )
+        attempts: list[dict[str, Any]] = []
+        candidate_id = grasp_plan["candidate_id"]
+        if self.tabletop_safety is not None:
+            tabletop = self.tabletop_safety.validate_grasp_plan(grasp_plan)
+            if not tabletop["allowed"]:
+                return {
+                    "allowed": False,
+                    "attempts": [{
+                        "candidate_id": candidate_id,
+                        "stage": "tabletop_clearance",
+                        "accepted": False,
+                        "reason": tabletop["reason"],
+                    }],
+                }
+        for skill_id, target_key, reference_key, stage, options in checks:
+            target = grasp_plan[target_key]
+            reference = grasp_plan[reference_key]
+            distance = math.sqrt(sum(
+                (float(target["position"][axis]) - float(reference["position"][axis])) ** 2
+                for axis in ("x", "y", "z")
+            ))
+            try:
+                result = self.moveit_backend.plan_to_pose(
+                    frame=target["frame"], position=target["position"],
+                    orientation=target["orientation"], velocity_scale=velocity,
+                    acceleration_scale=acceleration, skill_id=skill_id, **options,
+                )
+            except Exception as exc:
+                attempts.append({"candidate_id": candidate_id, "stage": stage,
+                                 "accepted": False, "reason": f"MoveIt exception: {exc}"})
+                return {"allowed": False, "attempts": attempts}
+            if not isinstance(result, dict) or not result.get("success", False):
+                message = result.get("message", "MoveIt planning failed.") if isinstance(result, dict) else "MoveIt planning failed."
+                attempts.append({"candidate_id": candidate_id, "stage": stage,
+                                 "accepted": False, "reason": str(message)})
+                return {"allowed": False, "attempts": attempts}
+            summary = self.grasp_motion._motion_summary(
+                result.get("summary", {}), skill_id, target, velocity, acceleration,
+                distance, grasp_plan["grasp_score"],
+            )
+            trajectory = self.grasp_motion.trajectory_validator.validate_motion_plan_summary(summary)
+            safety = validate_motion_summary(summary, self.real_arm_safety)
+            full_step = validate_full_grasp_step(skill_id, summary, self.real_arm_safety)
+            if trajectory["decision"] != "ALLOW" or not safety["allowed"] or not full_step["allowed"]:
+                reasons = list(trajectory["reasons"])
+                if not safety["allowed"]:
+                    reasons.append(safety["reason"])
+                if not full_step["allowed"]:
+                    reasons.append(full_step["reason"])
+                attempts.append({"candidate_id": candidate_id, "stage": stage,
+                                 "accepted": False, "reason": "; ".join(dict.fromkeys(reasons))})
+                return {"allowed": False, "attempts": attempts}
+            attempts.append({"candidate_id": candidate_id, "stage": stage,
+                             "accepted": True, "plan_id": result.get("plan_id")})
+        return {"allowed": True, "attempts": attempts}
+
+    def _configure_full_grasp_motion_planning(self, selected_variant: str) -> None:
+        """Use the same per-stage MoveIt settings as the full grasp demo.
+
+        In particular, the final approach and retreat use the configured Pilz
+        LIN planner rather than falling back to the generic MoveIt planner.
+        """
+        preview = self.grasping_config.get("plan_only_preview", {}) or {}
+        screening = preview.get("candidate_screening", {}) or {}
+        variant_options = (
+            planning_variant_kwargs(selected_variant, screening)
+            if selected_variant in {"full_pose", "relaxed_orientation", "position_only"}
+            else {}
+        )
+        self.grasp_motion.set_planning_kwargs(
+            "approach_grasp", {
+                **moveit_stage_planning_kwargs(preview, "grasp"),
+                **variant_options,
+            }
+        )
+        self.grasp_motion.set_planning_kwargs(
+            "retreat_grasp", moveit_stage_planning_kwargs(preview, "retreat")
+        )
 
     def _candidate_width_commands(self, candidates: list[Any]) -> list[dict[str, Any]]:
         usable = []
@@ -859,9 +1107,8 @@ def _rotate_vector_by_quaternion(
 
 
 def print_full_safety_summary(hardware_mode, real_arm_safety, gripper_config: dict) -> None:
-    print("RESTRICTED REAL HARDWARE DEMO")
-    print("This may move the REAL UR5 only to safe named targets or pregrasp.")
-    print("No approach, contact close, lift, or full pick is available.")
+    print("REAL HARDWARE GRASP MENU")
+    print("Each real arm or gripper action is individually reviewed and confirmed.")
     print_hardware_mode(hardware_mode)
     print_real_arm_safety(real_arm_safety)
     print("\nReal gripper limits:")
@@ -891,7 +1138,10 @@ def menu_text() -> str:
         "9. Open real gripper\n"
         "10. Move real UR5 to pregrasp\n"
         "11. Set real gripper to candidate width\n"
-        "12. Return to safe_home\n"
+        "12. Approach grasp pose (review + EXECUTE)\n"
+        "13. Close real gripper on object (YES)\n"
+        "14. Retreat with grasped object (review + EXECUTE)\n"
+        "15. Return to safe_home\n"
         "s. Show current demo state\n"
         "q. Quit"
     )
@@ -939,6 +1189,12 @@ def run_menu(controller, node, rclpy_module, hardware_mode, real_arm_safety) -> 
         elif choice == "11":
             print(controller.set_real_gripper_to_candidate_width(confirmation=None).message)
         elif choice == "12":
+            print(controller.approach_grasp().message)
+        elif choice == "13":
+            print(controller.close_real_gripper_for_grasp(confirmation=None).message)
+        elif choice == "14":
+            print(controller.retreat_grasp().message)
+        elif choice == "15":
             plan = controller.plan_named_target("safe_home")
             print(f"{plan.status}: {plan.message}")
             if plan.success:
@@ -961,7 +1217,16 @@ def main() -> None:
         perception_config = _load_yaml("perception.yaml")
         grasping_document = _load_yaml("grasping.yaml")
         gripper_document = _load_yaml("gripper.yaml")
+        tabletop_safety = TabletopSafety.from_config(_load_yaml("tabletop_safety.yaml"))
         assert_arm_execution_allowed(hardware_mode)
+        if (
+            hardware_mode.arm.execution_mode != "full_grasp_supervised"
+            or real_arm_safety.execution_mode != "full_grasp_supervised"
+        ):
+            raise PermissionError(
+                "This menu requires full_grasp_supervised in hardware_mode.yaml "
+                "and real_arm_safety.yaml."
+            )
     except Exception as exc:
         print(f"BLOCKED: failed to start restricted real hardware demo: {exc}")
         return
@@ -994,6 +1259,7 @@ def main() -> None:
             node=node,
             config=gripper_document,
             hardware_mode=hardware_mode,
+            real_arm_safety=real_arm_safety,
         )
         logger = AuditLogger("restricted_real_hw_demo_audit.log", hardware_mode=hardware_mode)
         controller = RestrictedRealHardwareDemoController(
@@ -1008,6 +1274,7 @@ def main() -> None:
             gripper_config=gripper_config,
             transformer=TFPoseTransformer(node, target_frame="base_link"),
             audit_logger=logger,
+            tabletop_safety=tabletop_safety,
         )
 
         print("\nWaiting for D435i RGB/depth/camera_info messages...")

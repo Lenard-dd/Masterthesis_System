@@ -1,13 +1,13 @@
 import importlib
 
 from llm_skill_robot.ros_restricted_real_hw_demo import (
-    FORBIDDEN_MENU_TERMS,
     RestrictedRealHardwareDemoController,
     grasp_preference_score,
     menu_text,
 )
 from llm_skill_robot.safety.hardware_mode import load_hardware_mode
 from llm_skill_robot.safety.real_arm_safety import load_real_arm_safety
+from llm_skill_robot.safety.tabletop_safety import TabletopSafety
 
 
 class FakeCameraBackend:
@@ -83,8 +83,13 @@ class FakeMoveItBackend:
             "plan_id": "plan_pregrasp",
             "summary": {
                 "plan_id": "plan_pregrasp",
+                "success": True,
+                "num_trajectory_points": 2,
                 "max_joint_delta_rad": 0.1,
                 "total_joint_delta_rad": 0.2,
+                "max_cartesian_step_m": 0.02,
+                "max_velocity_abs": 0.05,
+                "duration_sec": 1.0,
             },
         }
 
@@ -95,8 +100,13 @@ class FakeMoveItBackend:
             "plan_id": f"plan_{target_name}",
             "summary": {
                 "plan_id": f"plan_{target_name}",
+                "success": True,
+                "num_trajectory_points": 2,
                 "max_joint_delta_rad": 0.1,
                 "total_joint_delta_rad": 0.2,
+                "max_cartesian_step_m": 0.02,
+                "max_velocity_abs": 0.05,
+                "duration_sec": 1.0,
             },
         }
 
@@ -104,17 +114,12 @@ class FakeMoveItBackend:
         self.execute_calls.append((plan_id, final_confirmed))
         return {"success": True, "message": "executed", "output": {}}
 
-    def approach_grasp(self, *args, **kwargs):
-        raise AssertionError("approach_grasp must not be called")
-
-    def lift_object(self, *args, **kwargs):
-        raise AssertionError("lift_object must not be called")
-
 
 class FakeGripperBackend:
     def __init__(self):
         self.open_calls = []
         self.width_calls = []
+        self.close_calls = []
 
     def open_gripper(self, **kwargs):
         self.open_calls.append(kwargs)
@@ -127,8 +132,9 @@ class FakeGripperBackend:
     def get_gripper_state(self):
         return {"success": True, "message": "state ok", "output": {"current_width_m": 0.08}}
 
-    def close_gripper(self, **kwargs):
-        raise AssertionError("close_gripper must not be called")
+    def close_for_grasp(self, **kwargs):
+        self.close_calls.append(kwargs)
+        return {"success": True, "message": "closed", "output": {"command_sent": True}}
 
 
 def _controller(candidates=None, grasp_preferences=None):
@@ -155,9 +161,14 @@ def _controller(candidates=None, grasp_preferences=None):
         gripper_backend=gripper,
         grasping_config={
             "plan_only_preview": {
-                "pregrasp_distance_m": 0.1,
+                "pregrasp_distance_m": 0.05,
                 "velocity_scale": 0.05,
                 "acceleration_scale": 0.05,
+                "moveit": {
+                    "pipeline_id": "pilz_industrial_motion_planner",
+                    "planner_id": "PTP",
+                    "stage_planner_ids": {"grasp": "LIN", "retreat": "LIN"},
+                },
                 "candidate_screening": candidate_screening,
             }
         },
@@ -190,11 +201,11 @@ def test_state_machine_blocks_out_of_order_steps():
     assert controller.set_real_gripper_to_candidate_width("YES").status == "BLOCKED"
 
 
-def test_menu_has_no_forbidden_pick_or_contact_items():
+def test_menu_includes_supervised_grasp_contact_and_retreat_items():
     lowered = menu_text().lower()
 
-    for term in FORBIDDEN_MENU_TERMS:
-        assert term not in lowered
+    for term in ("approach grasp", "close real gripper", "retreat with grasped object"):
+        assert term in lowered
 
 
 def test_pregrasp_requires_grasp_plan():
@@ -245,12 +256,66 @@ def test_real_gripper_confirmation_required():
     assert gripper.width_calls[0]["width_m"] == 0.07
 
 
-def test_forbidden_internal_action_is_blocked():
-    controller, _moveit, _gripper = _controller()
+def test_contact_close_requires_reaching_grasp_pose_and_yes_confirmation():
+    controller, _moveit, gripper = _prepare_reviewed_controller()
 
-    for action_name in FORBIDDEN_MENU_TERMS:
-        result = controller.block_forbidden_internal_action(action_name)
-        assert result.status == "BLOCKED"
+    assert controller.close_real_gripper_for_grasp("YES").status == "BLOCKED"
+    controller.state.at_grasp_pose = True
+    assert controller.close_real_gripper_for_grasp("NO").status == "CANCELLED"
+    assert gripper.close_calls == []
+    assert controller.close_real_gripper_for_grasp("YES").status == "SUCCESS"
+    assert controller.state.gripper_closed is True
+
+
+def test_approach_close_and_retreat_are_single_confirmed_steps():
+    controller, moveit, _gripper = _prepare_reviewed_controller()
+    controller.state.grasp_plan = {
+        "pregrasp_pose": _candidate()["pose"],
+        "grasp_pose": {
+            **_candidate()["pose"],
+            "position": {"x": 0.4, "y": 0.0, "z": 0.25},
+        },
+        "retreat_pose": {
+            **_candidate()["pose"],
+            "position": {"x": 0.4, "y": 0.0, "z": 0.30},
+        },
+        "grasp_score": 0.9,
+        "candidate_id": "g1",
+    }
+    assert controller.move_to_pregrasp("EXECUTE").success
+    assert controller.approach_grasp("EXECUTE", trajectory_review_approved=True).success
+    assert controller.close_real_gripper_for_grasp("YES").success
+    assert controller.retreat_grasp("EXECUTE", trajectory_review_approved=True).success
+    assert moveit.execute_calls == [
+        ("plan_pregrasp", True),
+        ("plan_pregrasp", True),
+        ("plan_pregrasp", True),
+    ]
+
+
+def test_approach_and_retreat_use_configured_pilz_lin_stage_settings():
+    controller, _moveit, _gripper = _prepare_reviewed_controller()
+
+    assert controller.grasp_motion.planning_kwargs_by_skill["approach_grasp"].items() >= {
+        "pipeline_id": "pilz_industrial_motion_planner",
+        "planner_id": "LIN",
+    }.items()
+    assert controller.grasp_motion.planning_kwargs_by_skill["retreat_grasp"] == {
+        "pipeline_id": "pilz_industrial_motion_planner",
+        "planner_id": "LIN",
+    }
+
+
+def test_tabletop_backoff_moves_grasp_and_retreat_toward_pregrasp():
+    controller, _moveit, _gripper = _controller()
+    controller.tabletop_safety = TabletopSafety(grasp_contact_backoff_m=0.02)
+    controller.state.point_cloud = {"frame": "base_link"}
+
+    plan = controller._build_full_grasp_plan(_candidate())
+
+    assert round(plan["pregrasp_pose"]["position"]["z"], 6) == 0.25
+    assert round(plan["grasp_pose"]["position"]["z"], 6) == 0.28
+    assert round(plan["retreat_pose"]["position"]["z"], 6) == 0.38
 
 
 def test_top_down_face_aligned_candidate_is_preferred_over_higher_score_diagonal():

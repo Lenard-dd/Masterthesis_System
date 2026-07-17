@@ -74,6 +74,7 @@ class Robotiq2F140RealBackend:
         self.last_command: dict[str, float] | None = None
         self._width_publisher = None
         self._action_client = None
+        self._contact_close_client = None
         self._state_subscription = None
         self._latest_feedback_width_m: float | None = None
         self._latest_feedback_time: float | None = None
@@ -182,15 +183,19 @@ class Robotiq2F140RealBackend:
             )
         self._audit("contact_close_confirmed", command_preview=preview)
 
-        # The generic path retains all existing hardware-enable and driver checks;
-        # the exact YES above is converted to its internal execution gate here.
-        result = self.set_gripper_width(
-            safe_command["width_m"],
-            speed_mps=safe_command["speed_mps"],
-            force_N=safe_command["force_N"],
-            command="close_for_grasp",
-            confirmed=True,
-        )
+        # Some real Robotiq drivers expose a dedicated close service.  Keep the
+        # normal action adapter for open/width commands, but prefer that native
+        # service for an object-contact close when explicitly configured.
+        if self._contact_close_interface() == "service_close_gripper":
+            result = self._send_contact_close_service(safe_command)
+        else:
+            result = self.set_gripper_width(
+                safe_command["width_m"],
+                speed_mps=safe_command["speed_mps"],
+                force_N=safe_command["force_N"],
+                command="close_for_grasp",
+                confirmed=True,
+            )
         output = result.setdefault("output", {})
         output["command_preview"] = preview
         output["mode"] = "real_grasp_contact_close"
@@ -371,6 +376,74 @@ class Robotiq2F140RealBackend:
             "message": f"Unsupported real gripper driver interface_type: {interface_type!r}.",
             "output": {"command_sent": False},
         }
+
+    def _contact_close_interface(self) -> str:
+        return str(
+            self.driver_config.get("contact_close_interface_type", "")
+        ).strip().lower()
+
+    def _send_contact_close_service(self, command: dict[str, float]) -> dict:
+        """Call a driver's explicit close service after normal safety gating."""
+        service_name = str(
+            self.driver_config.get(
+                "contact_close_service_name",
+                self.driver_config.get("service_name", ""),
+            )
+        ).strip()
+        if not service_name or self.node is None:
+            return self._driver_unavailable(
+                "service_close_gripper requires a node and contact_close_service_name."
+            )
+        try:
+            assert_gripper_execution_allowed(self.hardware_mode)
+            if not self.real_gripper_enabled:
+                raise PermissionError("Real gripper is disabled in config/gripper.yaml.")
+            import rclpy
+            from robotiq_gripper_communication.srv import CloseGripper
+        except (ImportError, PermissionError) as exc:
+            return self._driver_unavailable(f"Close-gripper service unavailable: {exc}")
+
+        try:
+            if self._contact_close_client is None:
+                self._contact_close_client = self.node.create_client(
+                    CloseGripper, service_name
+                )
+            timeout = float(self.driver_config.get("server_wait_timeout_sec", 2.0))
+            if not self._contact_close_client.wait_for_service(timeout_sec=timeout):
+                return self._driver_unavailable(
+                    f"Close-gripper service is not available: {service_name}"
+                )
+            request = CloseGripper.Request()
+            future = self._contact_close_client.call_async(request)
+            timeout = float(self.driver_config.get("command_timeout_sec", 10.0))
+            rclpy.spin_until_future_complete(self.node, future, timeout_sec=timeout)
+            response = future.result() if future.done() else None
+            if response is None:
+                return {
+                    "success": False,
+                    "status": "TIMEOUT",
+                    "message": f"Timed out waiting for close-gripper service {service_name}.",
+                    "output": {"command_sent": True, "service_name": service_name},
+                }
+            succeeded = bool(getattr(response, "success", False))
+            message = str(getattr(response, "message", ""))
+            return {
+                "success": succeeded,
+                "status": "SUCCEEDED" if succeeded else "FAILED",
+                "message": message or (
+                    f"Close-gripper service completed through {service_name}."
+                    if succeeded else f"Close-gripper service failed through {service_name}."
+                ),
+                "output": {
+                    "command_sent": True,
+                    "service_name": service_name,
+                    "validated_command": command,
+                    "error_code": getattr(response, "error_code", None),
+                    "native_contact_close": True,
+                },
+            }
+        except Exception as exc:
+            return self._driver_unavailable(f"Close-gripper service failed safely: {exc}")
 
     def _publish_float_width(self, command: dict[str, float]) -> dict:
         topic = str(self.driver_config.get("command_topic", "")).strip()
