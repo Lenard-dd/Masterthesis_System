@@ -26,6 +26,7 @@ from llm_skill_robot.agent.agent_controller import (
     AgentDecisionKind,
     AgentProposal,
 )
+from llm_skill_robot.agent.agent_runtime import AgentRuntime, AgentTurnResult
 
 __all__ = [
     "BaseLLMClient",
@@ -50,4 +51,6 @@ __all__ = [
     "AgentDecisionError",
     "AgentDecisionKind",
     "AgentProposal",
+    "AgentRuntime",
+    "AgentTurnResult",
 ]
