@@ -11,6 +11,13 @@ from llm_skill_robot.agent.llm_client import (
 )
 from llm_skill_robot.agent.llm_plan_generator import LLMPlanGenerator
 from llm_skill_robot.agent.mock_plan_generator import MockPlanGenerator, PlanGenerationError
+from llm_skill_robot.agent.tool_registry import (
+    AgentTool,
+    AgentToolCall,
+    AgentToolRegistry,
+    AgentToolResult,
+    ToolSafetyTier,
+)
 
 __all__ = [
     "BaseLLMClient",
@@ -23,4 +30,9 @@ __all__ = [
     "NaturalLanguageModelInterface",
     "OpenAILLMClient",
     "PlanGenerationError",
+    "AgentTool",
+    "AgentToolCall",
+    "AgentToolRegistry",
+    "AgentToolResult",
+    "ToolSafetyTier",
 ]
