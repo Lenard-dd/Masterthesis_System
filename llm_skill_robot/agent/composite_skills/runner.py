@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from llm_skill_robot.agent.agent_runtime import AgentRuntime, AgentTurnResult
 from llm_skill_robot.agent.agent_state import AgentState
 from llm_skill_robot.agent.composite_skills.base import (
     BaseCompositeSkill,
@@ -12,6 +12,9 @@ from llm_skill_robot.agent.composite_skills.base import (
     CompositeSkillStatus,
 )
 from llm_skill_robot.agent.tool_registry import AgentToolCall
+
+if TYPE_CHECKING:
+    from llm_skill_robot.agent.agent_runtime import AgentRuntime, AgentTurnResult
 
 
 @dataclass

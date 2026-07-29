@@ -35,6 +35,7 @@ class SafePickObjectSkill(BaseCompositeSkill):
         "Safely pick one queried object through the fixed supervised full-grasp "
         "workflow with per-tool verification and human gates."
     )
+    arguments_model = SafePickObjectArguments
 
     _STAGES = (
         "move_to_named_target",

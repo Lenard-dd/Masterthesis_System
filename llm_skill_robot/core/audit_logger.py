@@ -66,6 +66,15 @@ class AuditLogger:
         }
         self._write_entry(entry)
 
+    def log_agent_event(self, event: str, **fields: Any):
+        """Record a structured Agent orchestration event for experiment traces."""
+        entry = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "event": event,
+            **fields,
+        }
+        self._write_entry(entry)
+
     def _write_entry(self, entry: Dict[str, Any]):
         """Write a log entry to the file."""
         entry = dict(entry)

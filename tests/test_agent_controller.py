@@ -64,6 +64,31 @@ def test_high_risk_tool_is_marked_for_external_human_gate():
     assert proposal.safety_tier.value == "human_confirm"
 
 
+def test_agent_can_start_a_composite_safe_pick_without_exposing_its_stages_to_llm():
+    client = FakeLLMClient([json.dumps({
+        "kind": "composite_skill_call",
+        "message": "Use the supervised grasp workflow.",
+        "composite_skill_call": {
+            "skill_name": "safe_pick_object",
+            "arguments": {"object_query": "red cube"},
+        },
+    })])
+    state = AgentState(user_goal="pick the red cube")
+
+    proposal = AgentController(client).propose_next_action(state)
+
+    assert proposal.plan_step is None
+    assert proposal.composite_skill.skill_name == "safe_pick_object"
+    assert proposal.requires_human_gate is True
+    assert proposal.composite_skill.next_tool_call().tool_name == "move_to_named_target"
+    assert state.context["active_composite_skill"]["arguments"] == {
+        "object_query": "red cube"
+    }
+    prompt = client.messages[0][1]["content"]
+    assert "composite_skill_catalog" in prompt
+    assert "safe_pick_object" in prompt
+
+
 def test_agent_rejects_unknown_or_invalid_tool_calls_without_recording_them():
     client = FakeLLMClient([json.dumps({
         "kind": "tool_call",

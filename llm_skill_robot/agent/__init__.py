@@ -27,6 +27,7 @@ from llm_skill_robot.agent.agent_controller import (
     AgentProposal,
 )
 from llm_skill_robot.agent.agent_runtime import AgentRuntime, AgentTurnResult
+from llm_skill_robot.agent.agent_session import AgentSessionResult, AgentSessionRunner
 from llm_skill_robot.agent.composite_skills import (
     BaseCompositeSkill,
     CompositeSkillCall,
@@ -63,6 +64,8 @@ __all__ = [
     "AgentProposal",
     "AgentRuntime",
     "AgentTurnResult",
+    "AgentSessionResult",
+    "AgentSessionRunner",
     "BaseCompositeSkill",
     "CompositeSkillCall",
     "CompositeSkillRegistry",

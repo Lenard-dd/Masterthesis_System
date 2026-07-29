@@ -49,6 +49,7 @@ class BaseCompositeSkill(ABC):
 
     skill_name: str
     description: str
+    arguments_model: type[BaseModel]
 
     def __init__(self) -> None:
         self._status = CompositeSkillStatus.READY
@@ -79,3 +80,12 @@ class BaseCompositeSkill(ABC):
             raise ValueError("A non-empty composite skill abort reason is required.")
         self._status = CompositeSkillStatus.ABORTED
         self._message = reason
+
+    @classmethod
+    def model_context(cls) -> dict[str, Any]:
+        """Provider-neutral metadata that may be shown to an LLM Agent."""
+        return {
+            "skill_name": cls.skill_name,
+            "description": cls.description,
+            "input_schema": cls.arguments_model.model_json_schema(),
+        }

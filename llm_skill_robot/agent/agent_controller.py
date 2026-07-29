@@ -9,11 +9,16 @@ from __future__ import annotations
 
 import json
 from enum import Enum
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from llm_skill_robot.agent.agent_state import AgentState, AgentStatus
+from llm_skill_robot.agent.composite_skills.base import (
+    BaseCompositeSkill,
+    CompositeSkillCall,
+)
+from llm_skill_robot.agent.composite_skills.registry import CompositeSkillRegistry
 from llm_skill_robot.agent.tool_registry import (
     AgentToolCall,
     AgentToolRegistry,
@@ -29,6 +34,7 @@ class AgentDecisionError(RuntimeError):
 
 class AgentDecisionKind(str, Enum):
     TOOL_CALL = "tool_call"
+    COMPOSITE_SKILL_CALL = "composite_skill_call"
     REQUEST_HUMAN = "request_human"
     COMPLETE = "complete"
     BLOCKED = "blocked"
@@ -42,13 +48,20 @@ class AgentDecision(BaseModel):
     kind: AgentDecisionKind
     message: str = Field(..., min_length=1)
     tool_call: AgentToolCall | None = None
+    composite_skill_call: CompositeSkillCall | None = None
 
     @model_validator(mode="after")
     def _validate_shape(self):
-        if self.kind == AgentDecisionKind.TOOL_CALL and self.tool_call is None:
-            raise ValueError("tool_call is required when kind is tool_call.")
-        if self.kind != AgentDecisionKind.TOOL_CALL and self.tool_call is not None:
-            raise ValueError("tool_call is allowed only when kind is tool_call.")
+        if self.kind == AgentDecisionKind.TOOL_CALL:
+            if self.tool_call is None or self.composite_skill_call is not None:
+                raise ValueError("tool_call alone is required when kind is tool_call.")
+        elif self.kind == AgentDecisionKind.COMPOSITE_SKILL_CALL:
+            if self.composite_skill_call is None or self.tool_call is not None:
+                raise ValueError(
+                    "composite_skill_call alone is required when kind is composite_skill_call."
+                )
+        elif self.tool_call is not None or self.composite_skill_call is not None:
+            raise ValueError("Calls are allowed only for tool_call or composite_skill_call.")
         return self
 
 
@@ -59,6 +72,7 @@ class AgentProposal(BaseModel):
 
     decision: AgentDecision
     plan_step: PlanStep | None = None
+    composite_skill: BaseCompositeSkill | None = None
     safety_tier: ToolSafetyTier | None = None
     requires_human_gate: bool = False
 
@@ -74,9 +88,15 @@ class AgentController:
         "verification and human safety gates run outside the model."
     )
 
-    def __init__(self, llm_client, tool_registry: AgentToolRegistry | None = None):
+    def __init__(
+        self,
+        llm_client,
+        tool_registry: AgentToolRegistry | None = None,
+        composite_skill_registry: CompositeSkillRegistry | None = None,
+    ):
         self.llm_client = llm_client
         self.tool_registry = tool_registry or AgentToolRegistry()
+        self.composite_skill_registry = composite_skill_registry or CompositeSkillRegistry()
 
     def propose_next_action(self, state: AgentState) -> AgentProposal:
         """Ask the model for one action and return a validated plan-only proposal."""
@@ -96,6 +116,27 @@ class AgentController:
         if decision.kind == AgentDecisionKind.BLOCKED:
             state.status = AgentStatus.BLOCKED
             return AgentProposal(decision=decision)
+        if decision.kind == AgentDecisionKind.COMPOSITE_SKILL_CALL:
+            assert decision.composite_skill_call is not None
+            try:
+                composite_skill = self.composite_skill_registry.create(
+                    decision.composite_skill_call
+                )
+            except (TypeError, ValueError) as exc:
+                raise AgentDecisionError(
+                    f"Invalid composite skill request: {exc}"
+                ) from exc
+            state.active_composite_skill = decision.composite_skill_call.skill_name
+            state.context["active_composite_skill"] = {
+                "skill_name": decision.composite_skill_call.skill_name,
+                "arguments": decision.composite_skill_call.arguments,
+            }
+            return AgentProposal(
+                decision=decision,
+                composite_skill=composite_skill,
+                safety_tier=ToolSafetyTier.HUMAN_REVIEW,
+                requires_human_gate=True,
+            )
 
         assert decision.tool_call is not None
         return self.prepare_tool_call(state, decision.tool_call, decision.message)
@@ -154,9 +195,15 @@ class AgentController:
         prompt = {
             "agent_state": state.model_dump(),
             "tool_catalog": [tool.model_context() for tool in self.tool_registry.list_tools()],
+            "composite_skill_catalog": self.composite_skill_registry.list_skills(),
             "decision_schema": AgentDecision.model_json_schema(),
             "policy": {
                 "one_tool_per_turn": True,
+                "composite_skills": (
+                    "Use a composite_skill_call for complete, supervised object "
+                    "grasping. Do not replace it with a reordered sequence of "
+                    "primitive grasp tools."
+                ),
                 "human_review_tools_require_external_gate": [
                     ToolSafetyTier.HUMAN_REVIEW.value,
                     ToolSafetyTier.HUMAN_CONFIRM.value,

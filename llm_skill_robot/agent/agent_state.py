@@ -30,6 +30,12 @@ class AgentState(BaseModel):
     user_goal: str = Field(..., min_length=1)
     status: AgentStatus = AgentStatus.ACTIVE
     safety_mode: str = "plan_only"
+    selected_object_id: str | None = None
+    selected_grasp_candidate_id: str | None = None
+    active_composite_skill: str | None = None
+    consecutive_failures: int = 0
+    total_failures: int = 0
+    termination_reason: str | None = None
     context: dict[str, Any] = Field(default_factory=dict)
     proposed_calls: list[AgentToolCall] = Field(default_factory=list)
     tool_results: list[AgentToolResult] = Field(default_factory=list)
@@ -56,6 +62,24 @@ class AgentState(BaseModel):
             )
         self.tool_results.append(result)
         self.context["last_tool_result"] = result.model_dump()
+        if result.success:
+            self.consecutive_failures = 0
+        else:
+            self.consecutive_failures += 1
+            self.total_failures += 1
+        self._project_trusted_result(result)
+
+    def record_workflow_failure(self, reason: str) -> None:
+        """Record a non-tool workflow/HITL failure for session stop policies."""
+        self.consecutive_failures += 1
+        self.total_failures += 1
+        self.context["last_workflow_failure"] = reason
+
+    def abort(self, reason: str) -> None:
+        if not reason.strip():
+            raise ValueError("A non-empty agent abort reason is required.")
+        self.status = AgentStatus.BLOCKED
+        self.termination_reason = reason
 
     def request_human_input(self, message: str) -> None:
         self.status = AgentStatus.WAITING_FOR_HUMAN
@@ -66,3 +90,16 @@ class AgentState(BaseModel):
             raise ValueError("Agent is not waiting for human input.")
         self.human_messages.append(message)
         self.status = AgentStatus.ACTIVE
+
+    def _project_trusted_result(self, result: AgentToolResult) -> None:
+        """Expose selected perception outputs as explicit, prompt-friendly state."""
+        if not result.success:
+            return
+        if result.tool_name == "detect_object":
+            object_id = result.output.get("object_id")
+            if object_id:
+                self.selected_object_id = str(object_id)
+        elif result.tool_name == "generate_grasp_pose":
+            candidate_id = result.output.get("candidate_id")
+            if candidate_id:
+                self.selected_grasp_candidate_id = str(candidate_id)

@@ -17,13 +17,7 @@ class CompositeSkillRegistry:
         }
 
     def list_skills(self) -> list[dict[str, str]]:
-        return [
-            {
-                "skill_name": name,
-                "description": self._factories[name]().description,
-            }
-            for name in sorted(self._factories)
-        ]
+        return [self._factories[name].model_context() for name in sorted(self._factories)]
 
     def create(self, call: CompositeSkillCall) -> BaseCompositeSkill:
         factory = self._factories.get(call.skill_name)
