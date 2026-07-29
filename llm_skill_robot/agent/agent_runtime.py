@@ -12,6 +12,7 @@ from typing import Any, Callable
 from llm_skill_robot.agent.agent_controller import AgentController, AgentProposal
 from llm_skill_robot.agent.agent_state import AgentState
 from llm_skill_robot.agent.tool_registry import AgentToolResult
+from llm_skill_robot.agent.tool_registry import AgentToolCall
 from llm_skill_robot.core.plan import RobotPlan
 from llm_skill_robot.core.schemas import (
     ExecutionReport,
@@ -59,6 +60,20 @@ class AgentRuntime:
 
     def run_turn(self, state: AgentState) -> AgentTurnResult:
         proposal = self.controller.propose_next_action(state)
+        return self.run_proposal(state, proposal)
+
+    def run_tool_call(
+        self,
+        state: AgentState,
+        call: AgentToolCall,
+        message: str = "Tool call prepared by a constrained workflow.",
+    ) -> AgentTurnResult:
+        """Run one primitive call emitted by a Composite Skill."""
+        proposal = self.controller.prepare_tool_call(state, call, message)
+        return self.run_proposal(state, proposal)
+
+    def run_proposal(self, state: AgentState, proposal: AgentProposal) -> AgentTurnResult:
+        """Run an already schema-validated proposal through safety gates."""
         if proposal.plan_step is None:
             return AgentTurnResult(proposal=proposal)
 

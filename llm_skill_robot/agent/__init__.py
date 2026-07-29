@@ -33,6 +33,8 @@ from llm_skill_robot.agent.composite_skills import (
     CompositeSkillRegistry,
     CompositeSkillResult,
     CompositeSkillStatus,
+    CompositeSkillRunner,
+    CompositeSkillTurnResult,
     SafePickObjectSkill,
 )
 
@@ -66,5 +68,7 @@ __all__ = [
     "CompositeSkillRegistry",
     "CompositeSkillResult",
     "CompositeSkillStatus",
+    "CompositeSkillRunner",
+    "CompositeSkillTurnResult",
     "SafePickObjectSkill",
 ]

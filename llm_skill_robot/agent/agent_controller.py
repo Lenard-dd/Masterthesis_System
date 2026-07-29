@@ -98,14 +98,37 @@ class AgentController:
             return AgentProposal(decision=decision)
 
         assert decision.tool_call is not None
-        tool = self.tool_registry.get(decision.tool_call.tool_name)
+        return self.prepare_tool_call(state, decision.tool_call, decision.message)
+
+    def prepare_tool_call(
+        self,
+        state: AgentState,
+        call: AgentToolCall,
+        message: str = "Tool call prepared by a constrained workflow.",
+    ) -> AgentProposal:
+        """Validate one non-LLM tool intent for a Composite Skill runner.
+
+        Composite skills may choose only their fixed, reviewed primitive
+        sequence.  They still use this method so their calls receive the same
+        schema validation and risk classification as LLM-proposed calls.
+        """
+        if state.status != AgentStatus.ACTIVE:
+            raise AgentDecisionError(
+                f"Cannot prepare a tool call while agent is {state.status.value}."
+            )
+        decision = AgentDecision(
+            kind=AgentDecisionKind.TOOL_CALL,
+            message=message,
+            tool_call=call,
+        )
+        tool = self.tool_registry.get(call.tool_name)
         if tool is None:
-            raise AgentDecisionError(f"LLM requested unknown Agent tool: {decision.tool_call.tool_name}")
+            raise AgentDecisionError(f"Requested unknown Agent tool: {call.tool_name}")
         try:
-            plan_step = tool.to_plan_step(decision.tool_call, state.next_step_id)
+            plan_step = tool.to_plan_step(call, state.next_step_id)
         except (TypeError, ValueError) as exc:
             raise AgentDecisionError(f"Invalid arguments for {tool.name}: {exc}") from exc
-        state.record_proposal(decision.tool_call)
+        state.record_proposal(call)
         requires_human_gate = tool.safety_tier in {
             ToolSafetyTier.HUMAN_REVIEW,
             ToolSafetyTier.HUMAN_CONFIRM,
