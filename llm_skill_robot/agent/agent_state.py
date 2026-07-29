@@ -103,3 +103,6 @@ class AgentState(BaseModel):
             candidate_id = result.output.get("candidate_id")
             if candidate_id:
                 self.selected_grasp_candidate_id = str(candidate_id)
+            candidate = result.output.get("candidate")
+            if isinstance(candidate, dict):
+                self.context["selected_grasp_candidate"] = candidate
