@@ -89,6 +89,23 @@ def test_agent_can_start_a_composite_safe_pick_without_exposing_its_stages_to_ll
     assert "safe_pick_object" in prompt
 
 
+def test_agent_normalizes_common_flattened_composite_llm_response_and_prompts_nesting():
+    client = FakeLLMClient([json.dumps({
+        "kind": "composite_skill_call",
+        "message": "Use the reviewed grasp workflow.",
+        "skill_name": "safe_pick_object",
+        "arguments": {"object_query": "red cube"},
+    })])
+    proposal = AgentController(client).propose_next_action(
+        AgentState(user_goal="pick the red cube")
+    )
+
+    assert proposal.composite_skill.skill_name == "safe_pick_object"
+    prompt = client.messages[0][1]["content"]
+    assert "required_output_examples" in prompt
+    assert "composite_skill_call" in prompt
+
+
 def test_agent_rejects_unknown_or_invalid_tool_calls_without_recording_them():
     client = FakeLLMClient([json.dumps({
         "kind": "tool_call",

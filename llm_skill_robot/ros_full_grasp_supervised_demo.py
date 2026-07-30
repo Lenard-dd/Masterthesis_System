@@ -11,6 +11,7 @@ from typing import Any, Callable
 import yaml
 
 from llm_skill_robot.core.audit_logger import AuditLogger
+from llm_skill_robot.core.grasp_motion_policy import GraspMotionPolicy
 from llm_skill_robot.grasping.full_grasp_state_machine import FullGraspStateMachine
 from llm_skill_robot.grasping.grasp_execution_backend import GraspExecutionBackend
 from llm_skill_robot.grasping.grasp_verifier import GraspVerifier
@@ -642,16 +643,13 @@ class FullGraspSupervisedDemoController:
             if selected_variant in {"full_pose", "relaxed_orientation", "position_only"}
             else {}
         )
-        setter(
-            "move_to_pregrasp",
-            {
-                **moveit_stage_planning_kwargs(preview, "pregrasp"),
-                **variant_options,
-            },
-        )
-        setter("approach_grasp", moveit_stage_planning_kwargs(preview, "grasp"))
-        setter("retreat_grasp", moveit_stage_planning_kwargs(preview, "retreat"))
-        setter("lift_object", moveit_stage_planning_kwargs(preview, "retreat"))
+        policy = GraspMotionPolicy.from_grasping_config(
+            self.grasping_config,
+            max_velocity_scale=self.real_arm_safety.limits.max_velocity_scale,
+            max_acceleration_scale=self.real_arm_safety.limits.max_acceleration_scale,
+        ).with_pregrasp_variant(variant_options)
+        for skill_id, options in policy.planning_kwargs_by_skill.items():
+            setter(skill_id, options)
 
     @staticmethod
     def _pose_is_base_link(pose: Any) -> bool:

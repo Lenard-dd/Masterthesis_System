@@ -91,6 +91,11 @@ def test_session_mixes_primitive_tool_and_composite_skill(tmp_path):
     assert result.composite_results[0].status.value == "completed"
     assert state.selected_object_id == "cube_1"
     assert state.selected_grasp_candidate_id == "grasp_1"
+    assert state.completed_composite_skills == [{
+        "skill_name": "safe_pick_object",
+        "arguments": {"object_query": "red cube"},
+        "output": result.composite_results[0].output,
+    }]
     assert executor.tool_names[0] == "move_to_named_target"
     assert "close_gripper" in executor.tool_names
     entries = (tmp_path / "agent.jsonl").read_text()
@@ -126,3 +131,22 @@ def test_session_rejects_composite_skill_without_task_level_human_gate():
     assert result.status == AgentStatus.BLOCKED
     assert result.composite_results[0].status.value == "aborted"
     assert executor.tool_names == []
+
+
+def test_session_ignores_duplicate_completed_composite_skill_before_execution():
+    decision = {
+        "kind": "composite_skill_call", "message": "Pick.",
+        "composite_skill_call": {
+            "skill_name": "safe_pick_object", "arguments": {"object_query": "red cube"}
+        },
+    }
+    executor = SessionExecutor()
+    state = AgentState(user_goal="pick red cube")
+    result = AgentSessionRunner(
+        _runtime([decision, decision], executor), composite_human_gate=lambda *_: True
+    ).run(state)
+
+    assert result.status == AgentStatus.COMPLETED
+    assert state.context["duplicate_completed_composite_skill_ignored"]["skill_name"] == "safe_pick_object"
+    # One safe-pick workflow is 11 Primitive Tools; the duplicate never starts.
+    assert len(executor.tool_names) == 11

@@ -84,8 +84,13 @@ class AgentController:
         "You are a constrained robot task agent. Decide exactly one next action. "
         "You may only use tools supplied in the tool catalog. Never output ROS, "
         "shell, driver, trajectory, or joint commands. Return only JSON matching "
-        "the AgentDecision schema. A tool proposal is not permission to execute; "
-        "verification and human safety gates run outside the model."
+        "the AgentDecision schema. Output exactly one JSON object: no Markdown, "
+        "no code fence, no explanation, and no additional top-level keys. "
+        "For kind='composite_skill_call', skill_name and arguments MUST be nested "
+        "inside composite_skill_call; never put them at the top level. "
+        "For kind='tool_call', tool_name and arguments MUST be nested inside "
+        "tool_call. A tool proposal is not permission to execute; verification "
+        "and human safety gates run outside the model."
     )
 
     def __init__(
@@ -204,11 +209,34 @@ class AgentController:
                     "grasping. Do not replace it with a reordered sequence of "
                     "primitive grasp tools."
                 ),
+                "completed_workflows": (
+                    "completed_composite_skills is trusted execution history. If it "
+                    "already contains the requested skill_name with the same arguments, "
+                    "return kind='complete' and do not propose that workflow again."
+                ),
                 "human_review_tools_require_external_gate": [
                     ToolSafetyTier.HUMAN_REVIEW.value,
                     ToolSafetyTier.HUMAN_CONFIRM.value,
                 ],
                 "on_uncertainty": "request_human or choose a safe observation tool",
+            },
+            "required_output_examples": {
+                "composite_skill_call": {
+                    "kind": "composite_skill_call",
+                    "message": "Use the reviewed supervised pick workflow.",
+                    "composite_skill_call": {
+                        "skill_name": "safe_pick_object",
+                        "arguments": {"object_query": "red cube"},
+                    },
+                },
+                "tool_call": {
+                    "kind": "tool_call",
+                    "message": "Observe the requested object.",
+                    "tool_call": {
+                        "tool_name": "detect_object",
+                        "arguments": {"query": "red cube"},
+                    },
+                },
             },
         }
         return [
@@ -223,6 +251,43 @@ class AgentController:
             lines = text.splitlines()
             text = "\n".join(lines[1:-1]).strip() if len(lines) >= 2 else text
         try:
-            return AgentDecision.model_validate(json.loads(text))
+            payload = json.loads(text)
+            return AgentDecision.model_validate(
+                AgentController._normalize_common_flat_call_shape(payload)
+            )
         except (json.JSONDecodeError, ValueError) as exc:
             raise AgentDecisionError(f"LLM did not return valid AgentDecision JSON: {exc}") from exc
+
+    @staticmethod
+    def _normalize_common_flat_call_shape(payload: Any) -> Any:
+        """Safely repair a frequent provider/model JSON nesting mistake.
+
+        The prompt demands nested calls.  This narrow compatibility path only
+        moves the two known call fields into their required object; all other
+        unexpected fields remain and are rejected by ``extra='forbid'``.
+        """
+        if not isinstance(payload, dict):
+            return payload
+        normalized = dict(payload)
+        kind = normalized.get("kind")
+        if (
+            kind == AgentDecisionKind.COMPOSITE_SKILL_CALL.value
+            and "composite_skill_call" not in normalized
+            and "skill_name" in normalized
+            and "arguments" in normalized
+        ):
+            normalized["composite_skill_call"] = {
+                "skill_name": normalized.pop("skill_name"),
+                "arguments": normalized.pop("arguments"),
+            }
+        elif (
+            kind == AgentDecisionKind.TOOL_CALL.value
+            and "tool_call" not in normalized
+            and "tool_name" in normalized
+            and "arguments" in normalized
+        ):
+            normalized["tool_call"] = {
+                "tool_name": normalized.pop("tool_name"),
+                "arguments": normalized.pop("arguments"),
+            }
+        return normalized

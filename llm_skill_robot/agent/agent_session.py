@@ -80,6 +80,24 @@ class AgentSessionRunner:
                 decision=proposal.decision.model_dump(),
             )
             if proposal.composite_skill is not None:
+                call = proposal.decision.composite_skill_call
+                assert call is not None
+                if state.has_completed_composite_skill(call.skill_name, call.arguments):
+                    state.status = AgentStatus.COMPLETED
+                    state.context["duplicate_completed_composite_skill_ignored"] = {
+                        "skill_name": call.skill_name,
+                        "arguments": dict(call.arguments),
+                    }
+                    self._audit(
+                        "duplicate_completed_composite_skill_ignored",
+                        skill_name=call.skill_name,
+                        arguments=call.arguments,
+                        message=(
+                            "A completed Composite Skill was proposed again; no "
+                            "robot action was executed and the session was completed."
+                        ),
+                    )
+                    break
                 result = self._run_composite_skill(proposal.composite_skill, state, max_composite_steps)
                 composite_results.append(result)
                 state.active_composite_skill = None
@@ -90,7 +108,11 @@ class AgentSessionRunner:
                     status=result.status.value,
                     result=result.model_dump(),
                 )
-                if result.status.value != "completed":
+                if result.status.value == "completed":
+                    state.record_completed_composite_skill(
+                        result.skill_name, call.arguments, result.output
+                    )
+                else:
                     state.record_workflow_failure(result.message)
             elif turn.tool_result is not None:
                 self._audit(

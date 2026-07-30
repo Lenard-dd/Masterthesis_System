@@ -33,6 +33,7 @@ class AgentState(BaseModel):
     selected_object_id: str | None = None
     selected_grasp_candidate_id: str | None = None
     active_composite_skill: str | None = None
+    completed_composite_skills: list[dict[str, Any]] = Field(default_factory=list)
     consecutive_failures: int = 0
     total_failures: int = 0
     termination_reason: str | None = None
@@ -74,6 +75,30 @@ class AgentState(BaseModel):
         self.consecutive_failures += 1
         self.total_failures += 1
         self.context["last_workflow_failure"] = reason
+
+    def record_completed_composite_skill(
+        self, skill_name: str, arguments: dict[str, Any], output: dict[str, Any]
+    ) -> None:
+        """Persist a completed workflow as trusted state for later LLM turns."""
+        entry = {
+            "skill_name": str(skill_name),
+            "arguments": dict(arguments),
+            "output": dict(output),
+        }
+        self.completed_composite_skills.append(entry)
+        self.context["completed_composite_skills"] = list(
+            self.completed_composite_skills
+        )
+
+    def has_completed_composite_skill(
+        self, skill_name: str, arguments: dict[str, Any]
+    ) -> bool:
+        """Return whether this exact task-level workflow already succeeded."""
+        return any(
+            entry.get("skill_name") == skill_name
+            and entry.get("arguments") == arguments
+            for entry in self.completed_composite_skills
+        )
 
     def abort(self, reason: str) -> None:
         if not reason.strip():
