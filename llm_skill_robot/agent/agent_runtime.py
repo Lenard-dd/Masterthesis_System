@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from llm_skill_robot.agent.agent_controller import AgentController, AgentProposal
+from llm_skill_robot.agent.agent_controller import ApprovalStage, AgentController, AgentProposal
 from llm_skill_robot.agent.agent_state import AgentState
 from llm_skill_robot.agent.tool_registry import AgentToolResult
 from llm_skill_robot.agent.tool_registry import AgentToolCall
@@ -111,6 +111,9 @@ class AgentRuntime:
                 human_decision=human_decision,
                 tool_result=result,
             )
+
+        if ApprovalStage.TASK_INTENT in proposal.approval_stages:
+            state.context["task_intent_approved"] = True
 
         report = self.execution_manager.execute_plan(
             plan,

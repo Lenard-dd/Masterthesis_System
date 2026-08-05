@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from llm_skill_robot.agent.agent_controller import AgentDecisionError
+from llm_skill_robot.agent.agent_controller import AgentDecisionError, ApprovalStage
 from llm_skill_robot.agent.agent_runtime import AgentRuntime
 from llm_skill_robot.agent.agent_state import AgentState, AgentStatus
 from llm_skill_robot.agent.composite_skills.base import (
@@ -158,6 +158,9 @@ class AgentSessionRunner:
         if decision.decision != ValidationDecision.APPROVE:
             skill.abort("Task-level human gate did not approve the composite skill.")
             return skill.result()
+        # The Composite Skill's task-level gate is approval point A. Its
+        # reviewed primitive stages still request their own B/C/D gates.
+        state.context["task_intent_approved"] = True
         return self.composite_runner.run_until_terminal(
             skill, state, max_steps=max_composite_steps
         )

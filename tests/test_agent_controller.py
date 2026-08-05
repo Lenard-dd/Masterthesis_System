@@ -3,6 +3,7 @@ import json
 import pytest
 
 from llm_skill_robot.agent.agent_controller import (
+    ApprovalStage,
     AgentController,
     AgentDecisionError,
 )
@@ -35,7 +36,8 @@ def test_agent_proposes_one_valid_observation_tool_and_records_feedback():
 
     assert proposal.plan_step.skill_id == "detect_object"
     assert proposal.plan_step.step_id == "1"
-    assert proposal.requires_human_gate is False
+    assert proposal.requires_human_gate is True
+    assert proposal.approval_stages == [ApprovalStage.TASK_INTENT]
     assert state.proposed_calls[-1].tool_name == "detect_object"
     assert "tool_catalog" in client.messages[0][1]["content"]
 
@@ -102,7 +104,9 @@ def test_agent_normalizes_common_flattened_composite_llm_response_and_prompts_ne
 
     assert proposal.composite_skill.skill_name == "safe_pick_object"
     prompt = client.messages[0][1]["content"]
-    assert "required_output_examples" in prompt
+    assert "allowed_next_actions" in prompt
+    assert "target_grounding" in prompt
+    assert "required_output_examples" not in prompt
     assert "composite_skill_call" in prompt
 
 
@@ -117,6 +121,34 @@ def test_agent_rejects_unknown_or_invalid_tool_calls_without_recording_them():
     with pytest.raises(AgentDecisionError, match="unknown Agent tool"):
         AgentController(client).propose_next_action(state)
     assert state.proposed_calls == []
+
+
+def test_pick_policy_rejects_a_default_example_target_not_in_the_user_goal():
+    client = FakeLLMClient([json.dumps({
+        "kind": "composite_skill_call",
+        "message": "Use the reviewed grasp workflow.",
+        "composite_skill_call": {
+            "skill_name": "safe_pick_object",
+            "arguments": {"object_query": "red cube"},
+        },
+    })])
+
+    proposal = AgentController(client).propose_next_action(
+        AgentState(user_goal="pick the blue bottle")
+    )
+
+    assert proposal.decision.kind.value == "request_human"
+    assert proposal.composite_skill is None
+    assert "default example" in proposal.decision.message
+
+
+def test_mixed_pick_and_return_home_goal_keeps_composite_and_follow_up_primitive_available():
+    controller = AgentController(FakeLLMClient([]))
+    allowed = controller._allowed_actions_for_goal(
+        AgentState(user_goal="pick the red cube and then return home")
+    )
+
+    assert {"safe_pick_object", "move_to_named_target"}.issubset(allowed)
 
 
 def test_agent_can_pause_for_human_and_be_resumed():

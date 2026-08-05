@@ -40,6 +40,15 @@ class AgentDecisionKind(str, Enum):
     BLOCKED = "blocked"
 
 
+class ApprovalStage(str, Enum):
+    """Named external review points; the Agent can request, never bypass them."""
+
+    TASK_INTENT = "task_intent"          # A: task and target are understood.
+    GRASP_CANDIDATE = "grasp_candidate"  # B: proposed grasp is acceptable.
+    TRAJECTORY = "trajectory"             # C: planned motion is acceptable.
+    EXECUTION = "execution"               # D: final motion/actuation release.
+
+
 class AgentDecision(BaseModel):
     """The only response format accepted from an Agent LLM turn."""
 
@@ -75,6 +84,7 @@ class AgentProposal(BaseModel):
     composite_skill: BaseCompositeSkill | None = None
     safety_tier: ToolSafetyTier | None = None
     requires_human_gate: bool = False
+    approval_stages: list[ApprovalStage] = Field(default_factory=list)
 
 
 class AgentController:
@@ -111,10 +121,15 @@ class AgentController:
             )
         response = self.llm_client.generate_text(self._build_messages(state))
         decision = self._parse_decision(response)
+        decision = self._apply_goal_policy(state, decision)
 
         if decision.kind == AgentDecisionKind.REQUEST_HUMAN:
             state.request_human_input(decision.message)
-            return AgentProposal(decision=decision, requires_human_gate=True)
+            return AgentProposal(
+                decision=decision,
+                requires_human_gate=True,
+                approval_stages=[ApprovalStage.TASK_INTENT],
+            )
         if decision.kind == AgentDecisionKind.COMPLETE:
             state.status = AgentStatus.COMPLETED
             return AgentProposal(decision=decision)
@@ -136,12 +151,12 @@ class AgentController:
                 "skill_name": decision.composite_skill_call.skill_name,
                 "arguments": decision.composite_skill_call.arguments,
             }
-            return AgentProposal(
+            return self._with_approval_policy(state, AgentProposal(
                 decision=decision,
                 composite_skill=composite_skill,
                 safety_tier=ToolSafetyTier.HUMAN_REVIEW,
                 requires_human_gate=True,
-            )
+            ))
 
         assert decision.tool_call is not None
         return self.prepare_tool_call(state, decision.tool_call, decision.message)
@@ -179,12 +194,12 @@ class AgentController:
             ToolSafetyTier.HUMAN_REVIEW,
             ToolSafetyTier.HUMAN_CONFIRM,
         }
-        return AgentProposal(
+        return self._with_approval_policy(state, AgentProposal(
             decision=decision,
             plan_step=plan_step,
             safety_tier=tool.safety_tier,
             requires_human_gate=requires_human_gate,
-        )
+        ))
 
     def record_tool_result(self, state: AgentState, result: Any) -> AgentToolResult:
         """Normalize trusted backend feedback and make it available next turn."""
@@ -197,6 +212,7 @@ class AgentController:
         return normalized
 
     def _build_messages(self, state: AgentState) -> list[dict[str, str]]:
+        allowed_actions = sorted(self._allowed_actions_for_goal(state))
         prompt = {
             "agent_state": state.model_dump(),
             "tool_catalog": [tool.model_context() for tool in self.tool_registry.list_tools()],
@@ -205,9 +221,25 @@ class AgentController:
             "policy": {
                 "one_tool_per_turn": True,
                 "composite_skills": (
-                    "Use a composite_skill_call for complete, supervised object "
-                    "grasping. Do not replace it with a reordered sequence of "
-                    "primitive grasp tools."
+                    "Use safe_pick_object only when the user's goal explicitly asks "
+                    "to pick, grasp, lift, or take an object. It is a fixed supervised "
+                    "workflow; do not recreate its internal grasp stages as LLM calls."
+                ),
+                "goal_routing": (
+                    "Choose only an action that matches the user goal and the allowed "
+                    "next actions. For observation requests use detect_object. For a "
+                    "named target movement use move_to_named_target. For a task outside "
+                    "the available capabilities, or for an ambiguous target, return "
+                    "kind='request_human' rather than selecting a grasp skill."
+                ),
+                "target_grounding": (
+                    "For every object query, use the object description from the user's "
+                    "goal. Never invent or reuse a demonstration object such as red cube."
+                ),
+                "mixed_workflows": (
+                    "A completed Composite Skill does not end a task automatically. On "
+                    "the next turn, inspect trusted state and choose a permitted primitive "
+                    "tool when it is needed to finish the remaining goal."
                 ),
                 "completed_workflows": (
                     "completed_composite_skills is trusted execution history. If it "
@@ -220,29 +252,119 @@ class AgentController:
                 ],
                 "on_uncertainty": "request_human or choose a safe observation tool",
             },
-            "required_output_examples": {
-                "composite_skill_call": {
-                    "kind": "composite_skill_call",
-                    "message": "Use the reviewed supervised pick workflow.",
-                    "composite_skill_call": {
-                        "skill_name": "safe_pick_object",
-                        "arguments": {"object_query": "red cube"},
-                    },
-                },
-                "tool_call": {
-                    "kind": "tool_call",
-                    "message": "Observe the requested object.",
-                    "tool_call": {
-                        "tool_name": "detect_object",
-                        "arguments": {"query": "red cube"},
-                    },
-                },
+            "allowed_next_actions": allowed_actions,
+            "approval_stages": {
+                "A_task_intent": "Confirm task intent and target before a task workflow.",
+                "B_grasp_candidate": "Confirm the selected grasp candidate.",
+                "C_trajectory": "Confirm the planned trajectory before motion.",
+                "D_execution": "Final release before actuation or execution.",
             },
         }
         return [
             {"role": "system", "content": self.SYSTEM_PROMPT},
             {"role": "user", "content": json.dumps(prompt, sort_keys=True)},
         ]
+
+    @staticmethod
+    def _normalized_goal(goal: str) -> str:
+        return " ".join(goal.lower().split())
+
+    def _allowed_actions_for_goal(self, state: AgentState) -> set[str]:
+        """Return the safe next actions justified by the user's stated goal.
+
+        This is intentionally conservative. It supplies a deterministic safety
+        boundary around the LLM rather than trusting a prompt alone to avoid an
+        unrelated grasp request.
+        """
+        goal = self._normalized_goal(state.user_goal)
+        actions: set[str] = set()
+        pick_terms = ("pick", "grasp", "lift", "take", "抓取", "拿起", "拾取", "夹取")
+        observe_terms = ("observe", "detect", "find", "locate", "look", "识别", "检测", "寻找", "查看")
+        place_terms = ("place", "put", "drop", "放置", "放下")
+        move_terms = ("move", "go home", "return home", "回到", "移动", "回原点", "回家")
+        gripper_terms = ("open gripper", "close gripper", "打开夹爪", "关闭夹爪", "夹爪")
+
+        pick_requested = any(term in goal for term in pick_terms)
+        if pick_requested:
+            # The Composite Skill owns its internal grasp sequence. Additional
+            # primitives are exposed only when separately requested by the
+            # user's task (for example, "observe, then pick, then go home").
+            # Keep safe_pick_object available after completion as well: the
+            # session runner has a dedicated duplicate-workflow safeguard.
+            actions.add("safe_pick_object")
+        if any(term in goal for term in observe_terms):
+            actions.update({"detect_object", "move_to_named_target"})
+        if any(term in goal for term in place_terms):
+            actions.add("place_object")
+        if any(term in goal for term in move_terms):
+            actions.add("move_to_named_target")
+        if any(term in goal for term in gripper_terms):
+            actions.update({"open_gripper", "close_gripper", "get_gripper_state"})
+        return actions
+
+    def _apply_goal_policy(self, state: AgentState, decision: AgentDecision) -> AgentDecision:
+        """Reject unsafe or unsupported routing before creating a plan proposal."""
+        if decision.kind in {AgentDecisionKind.REQUEST_HUMAN, AgentDecisionKind.COMPLETE, AgentDecisionKind.BLOCKED}:
+            return decision
+
+        action_name = (
+            decision.composite_skill_call.skill_name
+            if decision.composite_skill_call is not None
+            else decision.tool_call.tool_name if decision.tool_call is not None else None
+        )
+        # Preserve the existing strict unknown-tool error instead of silently
+        # treating an invented tool as an intent clarification.
+        if decision.tool_call is not None and self.tool_registry.get(action_name or "") is None:
+            return decision
+
+        allowed = self._allowed_actions_for_goal(state)
+        if not allowed:
+            return AgentDecision(
+                kind=AgentDecisionKind.REQUEST_HUMAN,
+                message=(
+                    "This request is outside the currently supported robot tasks. "
+                    "Please ask to observe an object, pick a specified object, place an "
+                    "already-held object, move to a named target, or operate the gripper."
+                ),
+            )
+
+        if action_name not in allowed:
+            return AgentDecision(
+                kind=AgentDecisionKind.REQUEST_HUMAN,
+                message=(
+                    f"The proposed action {action_name!r} does not match the stated task. "
+                    "Please clarify the intended supported robot operation."
+                ),
+            )
+
+        if decision.composite_skill_call is not None:
+            query = str(decision.composite_skill_call.arguments.get("object_query", "")).strip()
+            goal = self._normalized_goal(state.user_goal)
+            default_target_markers = ("red cube", "red", "cube", "红色", "红", "方块")
+            if query.lower() == "red cube" and not any(marker in goal for marker in default_target_markers):
+                return AgentDecision(
+                    kind=AgentDecisionKind.REQUEST_HUMAN,
+                    message="The proposed target reused a default example rather than the user's object. Please specify the object to pick.",
+                )
+        return decision
+
+    def _with_approval_policy(self, state: AgentState, proposal: AgentProposal) -> AgentProposal:
+        """Attach A/B/C/D gates based on the reviewed action category."""
+        stages: list[ApprovalStage] = []
+        if not state.context.get("task_intent_approved"):
+            stages.append(ApprovalStage.TASK_INTENT)
+
+        tool_name = proposal.plan_step.skill_id if proposal.plan_step else None
+        if tool_name == "review_grasp_candidate":
+            stages.append(ApprovalStage.GRASP_CANDIDATE)
+        elif tool_name in {"preview_grasp_motion", "move_to_pregrasp", "approach_grasp", "retreat_grasp"}:
+            stages.append(ApprovalStage.TRAJECTORY)
+        elif tool_name in {"open_gripper", "close_gripper", "pick_object", "place_object", "set_gripper_width", "test_gripper_width"}:
+            stages.append(ApprovalStage.EXECUTION)
+
+        proposal.approval_stages = stages
+        proposal.requires_human_gate = proposal.requires_human_gate or bool(stages)
+        return proposal
 
     @staticmethod
     def _parse_decision(response: str) -> AgentDecision:

@@ -21,6 +21,7 @@ from llm_skill_robot.agent.tool_registry import (
 from llm_skill_robot.agent.agent_state import AgentState, AgentStatus
 from llm_skill_robot.agent.agent_controller import (
     AgentController,
+    ApprovalStage,
     AgentDecision,
     AgentDecisionError,
     AgentDecisionKind,
@@ -58,6 +59,7 @@ __all__ = [
     "AgentState",
     "AgentStatus",
     "AgentController",
+    "ApprovalStage",
     "AgentDecision",
     "AgentDecisionError",
     "AgentDecisionKind",
