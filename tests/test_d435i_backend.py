@@ -1,4 +1,7 @@
 from unittest.mock import Mock
+import threading
+import time
+from types import SimpleNamespace
 
 import llm_skill_robot.perception.d435i_backend as d435i_module
 import numpy as np
@@ -79,6 +82,28 @@ def test_detect_object_without_rgb_returns_not_available():
     assert "No RGB frame received" in result.message
     assert "RGB received no" in result.message
     assert isinstance(result.scene, SceneModel)
+
+
+def test_wait_for_rgb_does_not_spin_node_owned_by_external_executor(monkeypatch):
+    class FakeRclpy:
+        @staticmethod
+        def spin_once(*_args, **_kwargs):
+            raise AssertionError("shared ROS node must not be spun by perception")
+
+    monkeypatch.setattr(d435i_module, "rclpy", FakeRclpy())
+    backend = D435iBackend(
+        config={"wait_timeout_sec": 0.2}, detector_adapter=None,
+    )
+    backend.node = SimpleNamespace(executor=object())
+
+    producer = threading.Thread(
+        target=lambda: (time.sleep(0.01), backend._on_rgb_image(object()))
+    )
+    producer.start()
+    try:
+        assert backend._wait_for_rgb_frame() is True
+    finally:
+        producer.join(timeout=1.0)
 
 
 def test_detect_object_converts_detector_detections(tmp_path):

@@ -6,7 +6,7 @@ import math
 import pprint
 import sys
 import time
-from typing import Any
+from typing import Any, Callable
 
 from llm_skill_robot.core.trajectory_validator import TrajectoryValidator
 from llm_skill_robot.core.trajectory_visualizer import TrajectoryVisualizer
@@ -402,6 +402,8 @@ def screen_grasp_candidates_for_plan_only(
     trajectory_validator,
     velocity_scale: float = 0.05,
     acceleration_scale: float = 0.05,
+    pose_adjuster: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    pose_validator: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> dict:
     """Select a GraspGenX candidate using MoveIt reachability and validation.
 
@@ -449,6 +451,8 @@ def screen_grasp_candidates_for_plan_only(
                 target_frame,
                 transformer,
             )
+            if pose_adjuster is not None:
+                poses = pose_adjuster(poses)
         except ValueError as exc:
             attempts.append(
                 {
@@ -459,6 +463,37 @@ def screen_grasp_candidates_for_plan_only(
                     "accepted": False,
                     "message": str(exc),
                     "validation": {"decision": "BLOCK", "reasons": [str(exc)]},
+                    "points": 0,
+                    "max_joint_delta_rad": None,
+                }
+            )
+            continue
+
+        pose_validation = (
+            pose_validator(poses)
+            if pose_validator is not None
+            else {"allowed": True, "reason": "No additional pose validator."}
+        )
+        if not bool(pose_validation.get("allowed", False)):
+            reason = str(
+                pose_validation.get("reason")
+                or "Candidate was blocked by the additional pose validator."
+            )
+            attempts.append(
+                {
+                    "candidate": candidate,
+                    "candidate_id": candidate_id,
+                    "score": candidate_score,
+                    "poses": poses,
+                    "variant": "tabletop_safety",
+                    "accepted": False,
+                    "message": reason,
+                    "validation": {
+                        "decision": "BLOCK",
+                        "reasons": [reason],
+                        "tabletop_safety": pose_validation,
+                    },
+                    "tabletop_safety": pose_validation,
                     "points": 0,
                     "max_joint_delta_rad": None,
                 }
@@ -508,6 +543,7 @@ def screen_grasp_candidates_for_plan_only(
                 "plan": sequence["stages"][-1]["plan"] if sequence.get("stages") else {},
                 "summary": summary,
                 "validation": validation,
+                "tabletop_safety": pose_validation,
                 "accepted": bool(sequence.get("success"))
                 and validation.get("decision") == "ALLOW",
                 "message": (

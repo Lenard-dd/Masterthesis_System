@@ -1,3 +1,4 @@
+import copy
 import importlib
 import math
 from dataclasses import replace
@@ -315,6 +316,62 @@ def test_candidate_screening_rejects_candidate_when_grasp_stage_fails():
     assert failed_attempts[0]["failed_stage"] == "grasp"
     assert backend.plan_calls[0]["planner_id"] == "PTP"
     assert backend.plan_calls[1]["planner_id"] == "LIN"
+
+
+def test_candidate_screening_adjusts_poses_before_moveit_planning():
+    backend = FakePlanOnlyBackend()
+    validated = {}
+
+    def adjust(poses):
+        adjusted = copy.deepcopy(poses)
+        adjusted["grasp"]["position"]["x"] = 0.77
+        return adjusted
+
+    def validate(poses):
+        validated.update(poses)
+        return {"allowed": True, "checks": {"grasp": {"allowed": True}}}
+
+    result = screen_grasp_candidates_for_plan_only(
+        [FAKE_CANDIDATE],
+        point_cloud={"frame": "base_link"},
+        preview_config={"candidate_screening": {"variants": ["full_pose"]}},
+        target_frame="base_link",
+        transformer=None,
+        backend=backend,
+        trajectory_validator=AllowValidator(),
+        pose_adjuster=adjust,
+        pose_validator=validate,
+    )
+
+    grasp_call = next(
+        call for call in backend.plan_calls if call["skill_id"] == "plan_grasp_pose"
+    )
+    assert grasp_call["position"]["x"] == pytest.approx(0.77)
+    assert validated["grasp"]["position"]["x"] == pytest.approx(0.77)
+    assert result["attempt"]["tabletop_safety"]["allowed"] is True
+
+
+def test_candidate_screening_blocks_unsafe_pose_before_moveit_planning():
+    backend = FakePlanOnlyBackend()
+
+    result = screen_grasp_candidates_for_plan_only(
+        [FAKE_CANDIDATE],
+        point_cloud={"frame": "base_link"},
+        preview_config={"candidate_screening": {"variants": ["full_pose"]}},
+        target_frame="base_link",
+        transformer=None,
+        backend=backend,
+        trajectory_validator=AllowValidator(),
+        pose_validator=lambda _poses: {
+            "allowed": False,
+            "reason": "gripper contact point is too close to the table",
+        },
+    )
+
+    assert result["selected"] is None
+    assert backend.plan_calls == []
+    assert result["attempts"][0]["variant"] == "tabletop_safety"
+    assert result["attempts"][0]["validation"]["decision"] == "BLOCK"
 
 
 def test_prepare_candidate_preview_applies_tf_and_ee_transform():

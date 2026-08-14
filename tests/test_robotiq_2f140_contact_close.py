@@ -124,6 +124,28 @@ def test_contact_close_uses_configured_native_close_service():
     assert sent == [{"width_m": 0.02, "speed_mps": 0.02, "force_N": 10.0}]
 
 
+def test_contact_close_preserves_native_object_contact_as_hold_evidence():
+    backend = _backend()
+    backend.driver_config["contact_close_interface_type"] = "service_close_gripper"
+    backend._send_contact_close_service = lambda command: {
+        "success": True,
+        "status": "SUCCEEDED",
+        "message": "contact detected",
+        "output": {
+            "command_sent": True,
+            "validated_command": command,
+            "object_contact_detected": True,
+            "error_code": 2,
+        },
+    }
+
+    result = backend.close_for_grasp(confirmation="YES")
+
+    assert result["success"] is True
+    assert result["output"]["object_contact_detected"] is True
+    assert result["output"]["object_may_be_held"] is True
+
+
 def test_contact_close_reports_unavailable_feedback_honestly():
     backend = _backend()
     backend._send_driver_command = _successful_driver

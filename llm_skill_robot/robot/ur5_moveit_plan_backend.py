@@ -914,8 +914,9 @@ class UR5MoveItPlanBackend:
             motion_request.allowed_planning_time = max(0.1, float(allowed_planning_time))
             motion_request.max_velocity_scaling_factor = float(velocity_scale)
             motion_request.max_acceleration_scaling_factor = float(acceleration_scale)
-            if start_state is not None:
-                motion_request.start_state = start_state
+            self._configure_motion_request_start_state(
+                motion_request, start_state
+            )
 
             goal = Constraints()
             position_constraint = PositionConstraint()
@@ -964,6 +965,19 @@ class UR5MoveItPlanBackend:
         except Exception as exc:
             self._pymoveit2_error = f"MoveIt pose planning service request failed: {exc}"
             return None
+
+    @staticmethod
+    def _configure_motion_request_start_state(motion_request, start_state) -> None:
+        """Use MoveIt's monitored current state when no explicit state is supplied.
+
+        An entirely empty RobotState with ``is_diff == False`` is interpreted
+        as an invalid absolute robot state by MoveIt/Pilz.  An empty diff is
+        the documented request for using the current planning-scene state.
+        """
+        if start_state is not None:
+            motion_request.start_state = start_state
+            return
+        motion_request.start_state.is_diff = True
 
     def get_plan_end_state(self, plan_id: str):
         """Build a RobotState from a cached trajectory's final point."""

@@ -6,6 +6,7 @@ import math
 import time
 
 from llm_skill_robot.perception.scene_model import ObjectPose
+from llm_skill_robot.ros_executor_utils import node_has_executor
 
 
 class TFPoseTransformer:
@@ -75,10 +76,14 @@ class TFPoseTransformer:
             except Exception as exc:
                 if time.monotonic() >= deadline:
                     break
-                try:
-                    self._rclpy.spin_once(self.node, timeout_sec=0.05)
-                except Exception:
+                if node_has_executor(self.node):
+                    # The owning executor continues filling the TF buffer.
                     time.sleep(0.05)
+                else:
+                    try:
+                        self._rclpy.spin_once(self.node, timeout_sec=0.05)
+                    except Exception:
+                        time.sleep(0.05)
         return None
 
     def _apply_transform(self, object_pose: ObjectPose, transform) -> ObjectPose:

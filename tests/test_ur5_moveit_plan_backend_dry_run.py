@@ -57,6 +57,11 @@ class PosePlanServiceBackend(UR5MoveItPlanBackend):
         return FakePosePlanResponse()
 
 
+class FakeMotionRequest:
+    def __init__(self):
+        self.start_state = type("FakeRobotState", (), {"is_diff": False})()
+
+
 def test_plan_to_named_target_returns_success_in_dry_run_mode():
     backend = UR5MoveItPlanBackend(dry_run=True)
 
@@ -178,6 +183,23 @@ def test_pose_plan_forwards_moveit_request_tuning_options():
     assert backend.pose_request["num_planning_attempts"] == 8
     assert backend.pose_request["allowed_planning_time"] == 7.5
     assert backend.pose_request["service_timeout_sec"] == 12.0
+
+
+def test_missing_explicit_start_state_uses_current_planning_scene_state():
+    request = FakeMotionRequest()
+
+    UR5MoveItPlanBackend._configure_motion_request_start_state(request, None)
+
+    assert request.start_state.is_diff is True
+
+
+def test_explicit_start_state_is_preserved_for_chained_planning():
+    request = FakeMotionRequest()
+    explicit = object()
+
+    UR5MoveItPlanBackend._configure_motion_request_start_state(request, explicit)
+
+    assert request.start_state is explicit
 
 
 def test_pose_plan_service_empty_trajectory_is_clear_failure():

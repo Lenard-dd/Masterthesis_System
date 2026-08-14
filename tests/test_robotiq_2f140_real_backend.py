@@ -124,6 +124,41 @@ def test_modules_import_without_ros_graph():
     )
 
 
+def test_native_contact_close_treats_inner_object_detection_as_success():
+    response = types.SimpleNamespace(
+        success=False,
+        error_code=2,
+        message="Robot Status: Gripper stopped. Object detected while closing",
+    )
+
+    result = Robotiq2F140RealBackend._interpret_contact_close_service_response(
+        response,
+        service_name="/close_gripper",
+        command={"width_m": 0.02, "speed_mps": 0.02, "force_N": 10.0},
+    )
+
+    assert result["success"] is True
+    assert result["status"] == "SUCCEEDED"
+    assert result["output"]["error_code"] == 2
+    assert result["output"]["object_contact_detected"] is True
+    assert result["output"]["native_service_success"] is False
+
+
+def test_native_contact_close_rejects_other_unsuccessful_object_statuses():
+    for error_code in (0, 1):
+        response = types.SimpleNamespace(
+            success=False, error_code=error_code, message="native failure"
+        )
+        result = Robotiq2F140RealBackend._interpret_contact_close_service_response(
+            response,
+            service_name="/close_gripper",
+            command={"width_m": 0.02, "speed_mps": 0.02, "force_N": 10.0},
+        )
+        assert result["success"] is False
+        assert result["status"] == "FAILED"
+        assert result["output"]["object_contact_detected"] is False
+
+
 def _install_fake_gripper_ros(monkeypatch):
     class FakeFloat32:
         def __init__(self, data=0.0):

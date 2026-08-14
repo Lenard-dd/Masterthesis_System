@@ -394,7 +394,12 @@ def _resolve_scene_object(object_id: Any, context: Dict[str, Any]) -> Any | None
 
 
 def _wait_for_point_cloud_inputs(camera: Any, timeout_sec: float = 5.0) -> Dict[str, Any]:
-    """Spin long enough for aligned depth and CameraInfo after RGB detection."""
+    """Wait for aligned depth and CameraInfo after RGB detection.
+
+    A camera attached to an existing executor must never be spun here because
+    rclpy would move its node away from that executor.  Standalone demos still
+    spin nodes which have no executor owner.
+    """
     if camera is None:
         return {"ready": False, "depth_received": False, "camera_info_received": False}
     node = getattr(camera, "node", None)
@@ -409,13 +414,16 @@ def _wait_for_point_cloud_inputs(camera: Any, timeout_sec: float = 5.0) -> Dict[
                 "camera_info_received": True,
             }
         if node is not None:
-            try:
-                import rclpy
+            from llm_skill_robot.ros_executor_utils import node_has_executor
 
-                rclpy.spin_once(node, timeout_sec=0.05)
-                continue
-            except Exception:
-                pass
+            if not node_has_executor(node):
+                try:
+                    import rclpy
+
+                    rclpy.spin_once(node, timeout_sec=0.05)
+                    continue
+                except Exception:
+                    pass
         time.sleep(0.05)
     return {
         "ready": False,

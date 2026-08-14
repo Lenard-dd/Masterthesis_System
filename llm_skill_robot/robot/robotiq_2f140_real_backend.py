@@ -209,14 +209,19 @@ class Robotiq2F140RealBackend:
         feedback_available = feedback_width is not None
         if feedback_available:
             feedback_width = float(feedback_width)
+        object_contact_detected = bool(output.get("object_contact_detected", False))
         output.update(
             {
                 "feedback_available": feedback_available,
                 "current_width_m": feedback_width,
                 "object_may_be_held": (
-                    bool(feedback_width > safe_command["width_m"] + 0.002)
-                    if feedback_available
-                    else None
+                    True
+                    if object_contact_detected
+                    else (
+                        bool(feedback_width > safe_command["width_m"] + 0.002)
+                        if feedback_available
+                        else None
+                    )
                 ),
             }
         )
@@ -425,25 +430,52 @@ class Robotiq2F140RealBackend:
                     "message": f"Timed out waiting for close-gripper service {service_name}.",
                     "output": {"command_sent": True, "service_name": service_name},
                 }
-            succeeded = bool(getattr(response, "success", False))
-            message = str(getattr(response, "message", ""))
-            return {
-                "success": succeeded,
-                "status": "SUCCEEDED" if succeeded else "FAILED",
-                "message": message or (
-                    f"Close-gripper service completed through {service_name}."
-                    if succeeded else f"Close-gripper service failed through {service_name}."
-                ),
-                "output": {
-                    "command_sent": True,
-                    "service_name": service_name,
-                    "validated_command": command,
-                    "error_code": getattr(response, "error_code", None),
-                    "native_contact_close": True,
-                },
-            }
+            return self._interpret_contact_close_service_response(
+                response, service_name=service_name, command=command
+            )
         except Exception as exc:
             return self._driver_unavailable(f"Close-gripper service failed safely: {exc}")
+
+    @staticmethod
+    def _interpret_contact_close_service_response(
+        response, *, service_name: str, command: dict[str, float]
+    ) -> dict:
+        """Map native Robotiq object status to supervised-grasp semantics."""
+        error_code = getattr(response, "error_code", None)
+        try:
+            error_code = int(error_code) if error_code is not None else None
+        except (TypeError, ValueError):
+            error_code = None
+        driver_success = bool(getattr(response, "success", False))
+        # ur_rtde::RobotiqGripper::STOPPED_INNER_OBJECT == 2. For an
+        # explicitly approved contact-close this is the desired outcome.
+        object_contact_detected = error_code == 2
+        succeeded = driver_success or object_contact_detected
+        native_message = str(getattr(response, "message", "")).strip()
+        message = (
+            "Grasp contact detected while closing; the gripper stopped on the object."
+            if object_contact_detected
+            else native_message or (
+                f"Close-gripper service completed through {service_name}."
+                if succeeded
+                else f"Close-gripper service failed through {service_name}."
+            )
+        )
+        return {
+            "success": succeeded,
+            "status": "SUCCEEDED" if succeeded else "FAILED",
+            "message": message,
+            "output": {
+                "command_sent": True,
+                "service_name": service_name,
+                "validated_command": command,
+                "error_code": error_code,
+                "native_contact_close": True,
+                "native_service_success": driver_success,
+                "object_contact_detected": object_contact_detected,
+                "native_message": native_message,
+            },
+        }
 
     def _publish_float_width(self, command: dict[str, float]) -> dict:
         topic = str(self.driver_config.get("command_topic", "")).strip()

@@ -92,3 +92,39 @@ def test_lookup_transform_spins_until_tf_buffer_is_populated():
 
     assert result is transform
     assert fake_rclpy.spin_calls == 1
+
+
+def test_lookup_transform_does_not_spin_node_owned_by_external_executor():
+    transform = SimpleNamespace(
+        transform=SimpleNamespace(
+            translation=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+            rotation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+        )
+    )
+
+    class FakeBuffer:
+        def __init__(self):
+            self.calls = 0
+
+        def lookup_transform(self, *_args):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("frame not ready")
+            return transform
+
+    class FakeRclpy:
+        class time:
+            class Time:
+                pass
+
+        @staticmethod
+        def spin_once(*_args, **_kwargs):
+            raise AssertionError("shared ROS node must not be spun by TF lookup")
+
+    transformer = TFPoseTransformer.__new__(TFPoseTransformer)
+    transformer.node = SimpleNamespace(executor=object())
+    transformer.target_frame = "base_link"
+    transformer._buffer = FakeBuffer()
+    transformer._rclpy = FakeRclpy()
+
+    assert transformer._lookup_transform("camera_color_optical_frame", 0.2) is transform

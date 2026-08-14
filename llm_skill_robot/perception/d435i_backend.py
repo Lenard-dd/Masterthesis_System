@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from llm_skill_robot.perception.scene_model import (
     SceneObject,
 )
 from llm_skill_robot.perception.tf_pose_transformer import TFPoseTransformer
+from llm_skill_robot.ros_executor_utils import node_has_executor
 
 try:  # ROS imports are optional so normal pytest does not need a ROS graph.
     import rclpy
@@ -57,6 +59,9 @@ class D435iBackend(BasePerceptionBackend):
         self.latest_rgb_msg = None
         self.latest_depth_msg = None
         self.latest_camera_info_msg = None
+        self._rgb_frame_event = threading.Event()
+        self._depth_frame_event = threading.Event()
+        self._camera_info_event = threading.Event()
         self.latest_scene = SceneModel(source="d435i_sam3")
         self.pose_estimator = ObjectPoseEstimator()
         self.pose_transformer = pose_transformer or self._make_pose_transformer()
@@ -214,15 +219,29 @@ class D435iBackend(BasePerceptionBackend):
 
     def _on_rgb_image(self, msg) -> None:
         self.latest_rgb_msg = msg
+        self._rgb_frame_event.set()
 
     def _on_depth_image(self, msg) -> None:
         self.latest_depth_msg = msg
+        self._depth_frame_event.set()
 
     def _on_camera_info(self, msg) -> None:
         self.latest_camera_info_msg = msg
+        self._camera_info_event.set()
 
     def _wait_for_rgb_frame(self) -> bool:
-        deadline = time.monotonic() + float(self.config["wait_timeout_sec"])
+        timeout = max(0.0, float(self.config["wait_timeout_sec"]))
+        if self.latest_rgb_msg is not None:
+            return True
+
+        # RosWorker owns the GUI node's executor.  Waiting on an event lets its
+        # callback thread deliver the frame without moving the node to rclpy's
+        # global executor.  Standalone demos retain their legacy self-spin path.
+        if node_has_executor(self.node):
+            self._rgb_frame_event.wait(timeout=timeout)
+            return self.latest_rgb_msg is not None
+
+        deadline = time.monotonic() + timeout
         while self.latest_rgb_msg is None and time.monotonic() < deadline:
             if self.node is not None and rclpy is not None:
                 try:
