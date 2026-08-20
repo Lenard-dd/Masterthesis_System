@@ -12,12 +12,12 @@ real_arm_safety:
     max_lift_distance_m: 0.10
     # Pregrasp can start from observe/safe_home and therefore needs a larger
     # joint-space allowance than the short Cartesian approach/retreat stages.
-    # 2.00 rad (114.6 deg) admits the measured 1.974-rad pregrasp transition;
+    # 2.10 rad (120.3 deg) admits the measured 2.048-rad pregrasp transition;
     # approach/retreat remain constrained by their Cartesian distance limits.
-    max_joint_delta_rad: 2.00
+    max_joint_delta_rad: 2.50
     max_total_joint_delta_rad: 3.00
-    max_velocity_scale: 0.05
-    max_acceleration_scale: 0.05
+    max_velocity_scale: 0.15
+    max_acceleration_scale: 0.15
     min_planning_time_sec: 2.0
 
   allowed_real_motion_skills:

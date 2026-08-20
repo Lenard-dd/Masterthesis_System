@@ -38,8 +38,8 @@ grasping:
     retreat_vector_frame: target_frame
     retreat_vector: [0.0, 0.0, 1.0]
     sequence_replanning_attempts: 1
-    velocity_scale: 0.05
-    acceleration_scale: 0.05
+    velocity_scale: 0.10
+    acceleration_scale: 0.10
     moveit:
       # Use Pilz for deterministic industrial-style grasp motion:
       #   PTP: joint-space move to pregrasp
