@@ -66,6 +66,20 @@ def test_high_risk_tool_is_marked_for_external_human_gate():
     assert proposal.safety_tier.value == "human_confirm"
 
 
+def test_multilingual_gripper_aliases_route_to_the_specific_safe_action():
+    controller = AgentController(FakeLLMClient([]))
+
+    assert controller._allowed_actions_for_goal(
+        AgentState(user_goal="闭合夹具")
+    ) == {"close_gripper"}
+    assert controller._allowed_actions_for_goal(
+        AgentState(user_goal="张开夹爪")
+    ) == {"open_gripper"}
+    assert controller._allowed_actions_for_goal(
+        AgentState(user_goal="グリッパーを閉じる")
+    ) == {"close_gripper"}
+
+
 def test_agent_can_start_a_composite_safe_pick_without_exposing_its_stages_to_llm():
     client = FakeLLMClient([json.dumps({
         "kind": "composite_skill_call",

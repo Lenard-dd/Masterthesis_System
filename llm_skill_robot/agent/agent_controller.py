@@ -90,6 +90,39 @@ class AgentProposal(BaseModel):
 class AgentController:
     """Build prompts and validate one next action against the Tool Registry."""
 
+    # Deterministic multilingual intent aliases form a safety boundary before
+    # the LLM chooses a tool.  Keep action-specific aliases separate so a
+    # phrase such as "闭合夹具" can never be routed to ``open_gripper``.
+    _PICK_TERMS = (
+        "pick", "grasp", "lift", "take", "抓取", "拿起", "拾取", "夹取",
+        "抓住", "抓起", "つかむ", "持ち上げる", "greifen", "aufheben",
+    )
+    _OBSERVE_TERMS = (
+        "observe", "detect", "find", "locate", "look", "识别", "检测", "寻找",
+        "查看", "观察", "发现", "検出", "探す", "erkennen", "finden",
+    )
+    _PLACE_TERMS = (
+        "place", "put", "drop", "放置", "放下", "摆放", "置于", "置く",
+        "置いて", "ablegen", "platzieren",
+    )
+    _MOVE_TERMS = (
+        "move", "go home", "return home", "回到", "移动", "回原点", "回家",
+        "前往", "移動", "戻る", "bewegen", "zurück",
+    )
+    _OPEN_GRIPPER_TERMS = (
+        "open gripper", "open the gripper", "open claw", "release gripper",
+        "打开夹爪", "张开夹爪", "松开夹爪", "打开夹具", "张开夹具", "松开夹具",
+        "打开夹子", "グリッパーを開く", "グリッパーを開いて", "greifer öffnen",
+    )
+    _CLOSE_GRIPPER_TERMS = (
+        "close gripper", "close the gripper", "close claw", "clamp gripper",
+        "关闭夹爪", "闭合夹爪", "合上夹爪", "合拢夹爪", "夹紧夹爪",
+        "关闭夹具", "闭合夹具", "合上夹具", "合拢夹具", "夹紧夹具",
+        "关闭夹子", "闭合夹子", "グリッパーを閉じる", "グリッパーを閉じて",
+        "greifer schließen",
+    )
+    _GENERIC_GRIPPER_TERMS = ("gripper", "claw", "夹爪", "夹具", "夹子", "グリッパー", "greifer")
+
     SYSTEM_PROMPT = (
         "You are a constrained robot task agent. Decide exactly one next action. "
         "You may only use tools supplied in the tool catalog. Never output ROS, "
@@ -278,13 +311,7 @@ class AgentController:
         """
         goal = self._normalized_goal(state.user_goal)
         actions: set[str] = set()
-        pick_terms = ("pick", "grasp", "lift", "take", "抓取", "拿起", "拾取", "夹取")
-        observe_terms = ("observe", "detect", "find", "locate", "look", "识别", "检测", "寻找", "查看")
-        place_terms = ("place", "put", "drop", "放置", "放下")
-        move_terms = ("move", "go home", "return home", "回到", "移动", "回原点", "回家")
-        gripper_terms = ("open gripper", "close gripper", "打开夹爪", "关闭夹爪", "夹爪")
-
-        pick_requested = any(term in goal for term in pick_terms)
+        pick_requested = self._contains_any(goal, self._PICK_TERMS)
         if pick_requested:
             # The Composite Skill owns its internal grasp sequence. Additional
             # primitives are exposed only when separately requested by the
@@ -292,15 +319,29 @@ class AgentController:
             # Keep safe_pick_object available after completion as well: the
             # session runner has a dedicated duplicate-workflow safeguard.
             actions.add("safe_pick_object")
-        if any(term in goal for term in observe_terms):
+        if self._contains_any(goal, self._OBSERVE_TERMS):
             actions.update({"detect_object", "move_to_named_target"})
-        if any(term in goal for term in place_terms):
+        if self._contains_any(goal, self._PLACE_TERMS):
             actions.add("place_object")
-        if any(term in goal for term in move_terms):
+        if self._contains_any(goal, self._MOVE_TERMS):
             actions.add("move_to_named_target")
-        if any(term in goal for term in gripper_terms):
+        open_requested = self._contains_any(goal, self._OPEN_GRIPPER_TERMS)
+        close_requested = self._contains_any(goal, self._CLOSE_GRIPPER_TERMS)
+        if open_requested:
+            actions.add("open_gripper")
+        if close_requested:
+            actions.add("close_gripper")
+        if (
+            not open_requested
+            and not close_requested
+            and self._contains_any(goal, self._GENERIC_GRIPPER_TERMS)
+        ):
             actions.update({"open_gripper", "close_gripper", "get_gripper_state"})
         return actions
+
+    @staticmethod
+    def _contains_any(goal: str, aliases: tuple[str, ...]) -> bool:
+        return any(alias in goal for alias in aliases)
 
     def _apply_goal_policy(self, state: AgentState, decision: AgentDecision) -> AgentDecision:
         """Reject unsafe or unsupported routing before creating a plan proposal."""
