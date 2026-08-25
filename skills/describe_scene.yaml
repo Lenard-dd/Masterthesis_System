@@ -1,0 +1,16 @@
+skill_id: "describe_scene"
+name: "Describe Scene"
+description: "Read the latest RGB camera image and return an unverified semantic scene description with candidate objects. This skill does not localize objects or move the robot."
+parameters:
+  - name: "max_candidates"
+    type: "int"
+    required: false
+    default: 8
+    min_value: 1
+    max_value: 12
+preconditions:
+  - "perception_available"
+effects:
+  - "unverified_scene_description_available"
+execution:
+  backend_method: "describe_scene"

@@ -6,6 +6,12 @@ from llm_skill_robot.perception.perception_factory import (
 )
 from llm_skill_robot.perception.perception_pipeline import PerceptionPipeline
 from llm_skill_robot.perception.perception_skill_backend import PerceptionSkillBackend
+from llm_skill_robot.perception.scene_understanding import (
+    SceneCandidate,
+    SceneDescription,
+    SceneDescriptionSkillBackend,
+    SceneUnderstandingClient,
+)
 from llm_skill_robot.perception.scene_model import (
     DetectionResult,
     ObjectPose,
@@ -26,6 +32,10 @@ __all__ = [
     "load_perception_config",
     "PerceptionPipeline",
     "PerceptionSkillBackend",
+    "SceneCandidate",
+    "SceneDescription",
+    "SceneDescriptionSkillBackend",
+    "SceneUnderstandingClient",
     "perception_context_from_config",
     "SceneModel",
     "SceneObject",

@@ -80,6 +80,30 @@ def test_multilingual_gripper_aliases_route_to_the_specific_safe_action():
     ) == {"close_gripper"}
 
 
+def test_scene_description_goal_routes_only_to_read_only_scene_tool():
+    controller = AgentController(FakeLLMClient([]))
+
+    assert controller._allowed_actions_for_goal(
+        AgentState(user_goal="扫描场景并描述桌面上有什么")
+    ) == {"describe_scene"}
+
+
+def test_scene_description_proposal_skips_human_approval_gate():
+    client = FakeLLMClient([json.dumps({
+        "kind": "tool_call",
+        "message": "Describe the scene.",
+        "tool_call": {"tool_name": "describe_scene", "arguments": {}},
+    })])
+
+    proposal = AgentController(client).propose_next_action(
+        AgentState(user_goal="describe the scene")
+    )
+
+    assert proposal.plan_step.skill_id == "describe_scene"
+    assert proposal.requires_human_gate is False
+    assert proposal.approval_stages == []
+
+
 def test_agent_can_start_a_composite_safe_pick_without_exposing_its_stages_to_llm():
     client = FakeLLMClient([json.dumps({
         "kind": "composite_skill_call",

@@ -158,8 +158,35 @@ def execute_non_motion_skill(
     perception_pipeline: PerceptionPipeline | None = None,
     point_cloud_builder: ObjectPointCloudBuilder | None = None,
     grasp_planner: GraspGenXGraspPlanner | None = None,
+    scene_description_backend=None,
 ) -> Dict[str, Any]:
     context = context if context is not None else {}
+    if step.skill_id == "describe_scene":
+        if scene_description_backend is None:
+            from llm_skill_robot.perception.scene_understanding import (
+                SceneDescriptionSkillBackend,
+            )
+
+            scene_description_backend = SceneDescriptionSkillBackend(
+                perception_pipeline or PerceptionPipeline()
+            )
+        parameters = dict(step.parameters)
+        result = scene_description_backend.describe_scene(**parameters)
+        if result.get("success"):
+            # This is semantic model output, explicitly not a geometry-verified
+            # scene. It must never be used as a pick/place target.
+            context["unverified_scene_description"] = result.get("scene_description")
+        return {
+            "step_id": step.step_id,
+            "skill_id": step.skill_id,
+            "parameters": parameters,
+            "mode": "rviz_sim",
+            "success": result.get("success", False),
+            "status": result.get("status"),
+            "message": result.get("message"),
+            "output": result,
+        }
+
     if step.skill_id == "detect_object":
         perception_pipeline = perception_pipeline or PerceptionPipeline()
         parameters = dict(step.parameters)

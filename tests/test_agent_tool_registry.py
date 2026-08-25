@@ -16,6 +16,11 @@ def test_registry_derives_tools_and_openai_schema_from_skill_library():
     assert schema["function"]["parameters"]["properties"]["query"]["type"] == "string"
     assert "query" in schema["function"]["parameters"]["required"]
 
+    describe_scene = registry.get("describe_scene")
+    assert describe_scene is not None
+    assert describe_scene.safety_tier == ToolSafetyTier.OBSERVE
+    assert describe_scene.validate_arguments({}) == {"max_candidates": 8}
+
 
 def test_registry_validates_types_bounds_enums_and_extra_arguments():
     registry = AgentToolRegistry()

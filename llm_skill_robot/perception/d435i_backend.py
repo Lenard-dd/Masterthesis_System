@@ -91,6 +91,18 @@ class D435iBackend(BasePerceptionBackend):
             value=self.latest_camera_info_msg,
         )
 
+    def capture_rgb_image(self) -> dict:
+        """Save a current RGB snapshot for a read-only vision-language skill."""
+        if not self._wait_for_rgb_frame():
+            return {
+                "status": "NOT_AVAILABLE",
+                "message": (
+                    f"No RGB frame received within {self.config['wait_timeout_sec']} seconds. "
+                    f"{self._debug_message('NOT_AVAILABLE')}"
+                ),
+            }
+        return self._save_latest_rgb_frame()
+
     def detect_object(
         self,
         query: str,

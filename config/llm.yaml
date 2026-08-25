@@ -4,3 +4,16 @@ llm:
   temperature: 0.0
   max_retries: 2
   timeout_sec: 30
+
+# Semantic, read-only scene scanning. The model may be changed independently
+# from the task-planning LLM as long as its adapter accepts an image and
+# returns the SceneDescription JSON schema.
+scene_understanding:
+  # Leave blank to reuse llm.model.
+  model: ""
+  temperature: 0.0
+  timeout_sec: 30
+  # low is sufficient for a quick candidate scan; SAM3/RGB-D performs the
+  # later precision localization.
+  image_detail: low
+  max_candidates: 8

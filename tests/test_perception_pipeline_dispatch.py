@@ -15,6 +15,44 @@ from llm_skill_robot.ros_nl_rviz_sim_demo import (
 )
 
 
+class _SceneDescriptionBackend:
+    def describe_scene(self, max_candidates=8):
+        return {
+            "success": True,
+            "status": "SUCCESS",
+            "message": "semantic scene description",
+            "scene_description": {
+                "scene_type": "tabletop_workspace",
+                "summary": "A cube is visible.",
+                "candidate_objects": [],
+                "hazards": [],
+            },
+            "max_candidates": max_candidates,
+        }
+
+
+def test_describe_scene_dispatches_without_creating_geometric_scene():
+    context = {}
+    step = PlanStep(
+        step_id="1",
+        skill_id="describe_scene",
+        description="Describe scene",
+        parameters={"max_candidates": 4},
+    )
+
+    result = execute_non_motion_skill(
+        step,
+        gripper_backend=None,
+        context=context,
+        scene_description_backend=_SceneDescriptionBackend(),
+    )
+
+    assert result["success"] is True
+    assert result["status"] == "SUCCESS"
+    assert context["unverified_scene_description"]["scene_type"] == "tabletop_workspace"
+    assert "scene" not in context
+
+
 def test_detect_object_step_dispatches_to_default_unavailable_backend():
     context = {}
     step = PlanStep(

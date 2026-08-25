@@ -101,6 +101,10 @@ class AgentController:
         "observe", "detect", "find", "locate", "look", "识别", "检测", "寻找",
         "查看", "观察", "发现", "検出", "探す", "erkennen", "finden",
     )
+    _SCENE_DESCRIPTION_TERMS = (
+        "describe scene", "describe the scene", "scan scene", "scene overview", "what is on the table",
+        "场景描述", "扫描场景", "识别场景", "环境识别", "场景信息", "桌面上有什么",
+    )
     _PLACE_TERMS = (
         "place", "put", "drop", "放置", "放下", "摆放", "置于", "置く",
         "置いて", "ablegen", "platzieren",
@@ -260,7 +264,8 @@ class AgentController:
                 ),
                 "goal_routing": (
                     "Choose only an action that matches the user goal and the allowed "
-                    "next actions. For observation requests use detect_object. For a "
+                    "next actions. For scene-description requests use describe_scene; "
+                    "for precise object observation use detect_object. For a "
                     "named target movement use move_to_named_target. For a task outside "
                     "the available capabilities, or for an ambiguous target, return "
                     "kind='request_human' rather than selecting a grasp skill."
@@ -311,6 +316,9 @@ class AgentController:
         """
         goal = self._normalized_goal(state.user_goal)
         actions: set[str] = set()
+        scene_description_requested = self._contains_any(
+            goal, self._SCENE_DESCRIPTION_TERMS
+        )
         pick_requested = self._contains_any(goal, self._PICK_TERMS)
         if pick_requested:
             # The Composite Skill owns its internal grasp sequence. Additional
@@ -319,7 +327,9 @@ class AgentController:
             # Keep safe_pick_object available after completion as well: the
             # session runner has a dedicated duplicate-workflow safeguard.
             actions.add("safe_pick_object")
-        if self._contains_any(goal, self._OBSERVE_TERMS):
+        if scene_description_requested:
+            actions.add("describe_scene")
+        if self._contains_any(goal, self._OBSERVE_TERMS) and not scene_description_requested:
             actions.update({"detect_object", "move_to_named_target"})
         if self._contains_any(goal, self._PLACE_TERMS):
             actions.add("place_object")
@@ -391,11 +401,19 @@ class AgentController:
 
     def _with_approval_policy(self, state: AgentState, proposal: AgentProposal) -> AgentProposal:
         """Attach A/B/C/D gates based on the reviewed action category."""
+        tool_name = proposal.plan_step.skill_id if proposal.plan_step else None
+        # A scene description is an explicitly read-only camera/LLM
+        # observation. It creates no geometric target and cannot command the
+        # robot, so it may run without a task-intent approval gate.
+        if tool_name == "describe_scene":
+            proposal.approval_stages = []
+            proposal.requires_human_gate = False
+            return proposal
+
         stages: list[ApprovalStage] = []
         if not state.context.get("task_intent_approved"):
             stages.append(ApprovalStage.TASK_INTENT)
 
-        tool_name = proposal.plan_step.skill_id if proposal.plan_step else None
         if tool_name == "review_grasp_candidate":
             stages.append(ApprovalStage.GRASP_CANDIDATE)
         elif tool_name in {"preview_grasp_motion", "move_to_pregrasp", "approach_grasp", "retreat_grasp"}:
