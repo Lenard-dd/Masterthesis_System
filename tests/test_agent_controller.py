@@ -134,6 +134,17 @@ def test_agent_accepts_one_multi_object_localization_call():
     assert "multi-object localization" in prompt
 
 
+def test_relative_place_goal_allows_plan_only_place_pose_computation():
+    controller = AgentController(FakeLLMClient([]))
+
+    allowed = controller._allowed_actions_for_goal(
+        AgentState(user_goal="place black cube between red cube and white cube")
+    )
+
+    assert "compute_place_pose" in allowed
+    assert "place_object" not in allowed
+
+
 def test_scene_scan_wording_and_common_typo_route_to_scene_description_without_llm():
     client = FakeLLMClient([])
 

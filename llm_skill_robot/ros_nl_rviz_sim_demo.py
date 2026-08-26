@@ -44,7 +44,9 @@ GRIPPER_SKILL_IDS = {
     "set_gripper_width",
     "get_gripper_state",
 }
-PERCEPTION_SKILL_IDS = {"detect_object", "detect_objects", "build_object_point_cloud"}
+PERCEPTION_SKILL_IDS = {
+    "detect_object", "detect_objects", "build_object_point_cloud", "compute_place_pose",
+}
 GRASP_PLANNING_SKILL_IDS = {"generate_grasp_pose", "review_grasp_candidate"}
 OBJECT_RELATED_SKILL_IDS = {"pick_object", "place_object"}
 
@@ -260,6 +262,40 @@ def execute_non_motion_skill(
             "objects": result.get("objects", []),
             "query_results": result.get("query_results", []),
             "scene": result.get("scene", {}),
+            "output": result,
+        }
+
+    if step.skill_id == "compute_place_pose":
+        from llm_skill_robot.perception.spatial_reasoning import RelativePlacePosePlanner
+
+        parameters = dict(step.parameters)
+        latest_scene = context.get("scene")
+        if latest_scene is None and perception_pipeline is not None:
+            latest_scene = perception_pipeline.get_latest_scene().model_dump()
+        try:
+            result = RelativePlacePosePlanner().compute(
+                latest_scene or {},
+                source_id=str(parameters.get("source_id", "")),
+                relation=str(parameters.get("relation", "")),
+                reference_ids=list(parameters.get("reference_ids", [])),
+            )
+            result["success"] = True
+        except Exception as exc:
+            result = {
+                "success": False,
+                "status": "FAILED",
+                "message": f"compute_place_pose failed: {exc}",
+            }
+        if result.get("success"):
+            context["place_pose_plan"] = result
+        return {
+            "step_id": step.step_id,
+            "skill_id": step.skill_id,
+            "parameters": parameters,
+            "mode": "rviz_sim",
+            "success": bool(result.get("success", False)),
+            "status": result.get("status", "FAILED"),
+            "message": result.get("message", "Place-pose computation failed."),
             "output": result,
         }
 

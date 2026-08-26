@@ -1,0 +1,20 @@
+skill_id: "compute_place_pose"
+name: "Compute Relative Place Pose"
+description: "Compute a plan-only target pose from localized object coordinates and a symbolic spatial relation."
+parameters:
+  - name: "source_id"
+    type: "string"
+    required: true
+  - name: "relation"
+    type: "string"
+    required: true
+    allowed_values: ["between", "right_of", "left_of", "on_top_of"]
+  - name: "reference_ids"
+    type: "string_list"
+    required: true
+preconditions:
+  - "localized_scene_available"
+effects:
+  - "plan_only_place_pose_computed"
+execution:
+  backend_method: "compute_place_pose"

@@ -1,3 +1,5 @@
+import pytest
+
 from llm_skill_robot.core.audit_logger import AuditLogger
 from llm_skill_robot.core.plan import PlanStep
 from llm_skill_robot.core.skill_library import SkillLibrary
@@ -118,6 +120,41 @@ def test_detect_objects_dispatches_one_multi_object_result_into_context():
     assert len(result["objects"]) == 3
     assert len(context["localized_objects"]) == 3
     assert context["scene"].frame == "base_link"
+
+
+def test_compute_place_pose_uses_the_trusted_localized_scene_only():
+    context = {
+        "scene": SceneModel(objects=[
+            SceneObject(
+                object_id="black_cube_1", label="black cube", confidence=0.9,
+                pose_available=True,
+                pose=ObjectPose(frame="base_link", x=0.1, y=0.0, z=0.02),
+                metadata={"dimensions_m": [0.04, 0.04, 0.04]},
+            ),
+            SceneObject(
+                object_id="red_cube_1", label="red cube", confidence=0.9,
+                pose_available=True,
+                pose=ObjectPose(frame="base_link", x=0.3, y=0.0, z=0.02),
+                metadata={"dimensions_m": [0.04, 0.04, 0.04]},
+            ),
+        ]),
+    }
+    step = PlanStep(
+        step_id="2",
+        skill_id="compute_place_pose",
+        description="Place black cube right of red cube",
+        parameters={
+            "source_id": "black_cube_1",
+            "relation": "right_of",
+            "reference_ids": ["red_cube_1"],
+        },
+    )
+
+    result = execute_non_motion_skill(step, gripper_backend=None, context=context)
+
+    assert result["success"] is True
+    assert result["output"]["target_pose"]["x"] == pytest.approx(0.37)
+    assert context["place_pose_plan"]["requires_confirmation"] is True
 
 
 def test_pick_object_after_unavailable_detection_is_blocked():

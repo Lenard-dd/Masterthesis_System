@@ -120,10 +120,23 @@ class AgentState(BaseModel):
         """Expose selected perception outputs as explicit, prompt-friendly state."""
         if not result.success:
             return
+        if result.tool_name in {"detect_object", "detect_objects"}:
+            objects = result.output.get("objects", [])
+            scene = result.output.get("scene")
+            if isinstance(objects, list):
+                self.context["localized_objects"] = objects
+            if isinstance(scene, dict):
+                # This is the persistent, trusted object table for later
+                # relative-place computations. It originates only from the
+                # RGB-D localization backend, never free-form LLM output.
+                self.context["localized_object_registry"] = scene
+                self.context["scene"] = scene
         if result.tool_name == "detect_object":
             object_id = result.output.get("object_id")
             if object_id:
                 self.selected_object_id = str(object_id)
+        elif result.tool_name == "compute_place_pose":
+            self.context["place_pose_plan"] = dict(result.output)
         elif result.tool_name == "generate_grasp_pose":
             candidate_id = result.output.get("candidate_id")
             if candidate_id:

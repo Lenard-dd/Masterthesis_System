@@ -118,6 +118,10 @@ class AgentController:
         "place", "put", "drop", "放置", "放下", "摆放", "置于", "置く",
         "置いて", "ablegen", "platzieren",
     )
+    _SPATIAL_RELATION_TERMS = (
+        "between", "middle", "right of", "right_of", "left of", "left_of",
+        "on top of", "on_top_of", "stack", "中间", "右边", "左边", "上方", "叠放",
+    )
     _MOVE_TERMS = (
         "move", "go home", "return home", "回到", "移动", "回原点", "回家",
         "前往", "移動", "戻る", "bewegen", "zurück",
@@ -291,6 +295,11 @@ class AgentController:
                     "with arguments.queries containing one exact query per object. "
                     "Do not split a multi-object localization request into several "
                     "detect_object calls. For a "
+                    "relative placement request, use compute_place_pose first. "
+                    "Convert the requested relation to exactly one of between, "
+                    "right_of, left_of, or on_top_of; use localized object IDs or "
+                    "unambiguous labels. This tool only computes a pose and does not "
+                    "place an object. For a "
                     "named target movement use move_to_named_target. For a task outside "
                     "the available capabilities, or for an ambiguous target, return "
                     "kind='request_human' rather than selecting a grasp skill."
@@ -359,7 +368,13 @@ class AgentController:
             # observe-then-move workflows; it remains subject to verification.
             actions.update({"detect_object", "detect_objects", "move_to_named_target"})
         if self._contains_any(goal, self._PLACE_TERMS):
-            actions.add("place_object")
+            if self._contains_any(goal, self._SPATIAL_RELATION_TERMS):
+                # Relative placement is plan-only in this phase. A future
+                # reviewed pick/place workflow may consume this pose, but the
+                # LLM must not jump directly to physical placement.
+                actions.add("compute_place_pose")
+            else:
+                actions.add("place_object")
         if self._contains_any(goal, self._MOVE_TERMS):
             actions.add("move_to_named_target")
         open_requested = self._contains_any(goal, self._OPEN_GRIPPER_TERMS)
@@ -443,7 +458,7 @@ class AgentController:
         # Scene description and object localization are read-only perception
         # operations. They cannot command the robot; localization only
         # produces geometry for a later, separately reviewed manipulation.
-        if tool_name in {"describe_scene", "detect_object", "detect_objects"}:
+        if tool_name in {"describe_scene", "detect_object", "detect_objects", "compute_place_pose"}:
             proposal.approval_stages = []
             proposal.requires_human_gate = False
             return proposal
