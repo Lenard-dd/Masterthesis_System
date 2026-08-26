@@ -151,6 +151,95 @@ def test_detect_object_converts_detector_detections(tmp_path):
     assert "detector status SUCCESS" in result.message
 
 
+def test_detect_objects_uses_one_saved_rgb_frame_for_all_queries():
+    detector = Mock()
+    detector.detect.side_effect = [
+        {
+            "status": "SUCCESS", "message": "black found",
+            "detections": [{"label": "black cube", "confidence": 0.9, "metadata": {}}],
+        },
+        {
+            "status": "SUCCESS", "message": "red found",
+            "detections": [{"label": "red cube", "confidence": 0.8, "metadata": {}}],
+        },
+    ]
+    backend = D435iBackend(config={"wait_timeout_sec": 0.0}, detector_adapter=detector)
+    backend.latest_rgb_msg = object()
+    backend._save_latest_rgb_frame = Mock(return_value={
+        "status": "SUCCESS", "message": "saved", "path": "data/perception_runtime/latest_rgb.png",
+    })
+
+    result = backend.detect_objects(["black cube", "red cube"])
+
+    backend._save_latest_rgb_frame.assert_called_once()
+    assert detector.detect.call_count == 2
+    assert result["status"] == "SUCCESS"
+    assert [item["metadata"]["query"] for item in result["objects"]] == ["black cube", "red cube"]
+    assert [item["pose_available"] for item in result["objects"]] == [False, False]
+
+
+def test_detect_objects_uses_detector_multi_query_api_when_available():
+    class MultiQueryDetector:
+        def __init__(self):
+            self.calls = []
+
+        def detect_many(self, image_path, queries, min_confidence):
+            self.calls.append((image_path, queries, min_confidence))
+            return {
+                "status": "SUCCESS",
+                "message": "shared image encoding",
+                "query_results": [
+                    {
+                        "query": "black cube",
+                        "status": "SUCCESS",
+                        "message": "found",
+                        "detections": [
+                            {"label": "black cube", "confidence": 0.9, "metadata": {}}
+                        ],
+                    },
+                    {
+                        "query": "red cube",
+                        "status": "NOT_FOUND",
+                        "message": "none",
+                        "detections": [],
+                    },
+                ],
+            }
+
+    detector = MultiQueryDetector()
+    backend = D435iBackend(config={"wait_timeout_sec": 0.0}, detector_adapter=detector)
+    backend.latest_rgb_msg = object()
+    backend._save_latest_rgb_frame = Mock(return_value={
+        "status": "SUCCESS", "message": "saved", "path": "data/perception_runtime/latest_rgb.png",
+    })
+
+    result = backend.detect_objects(["black cube", "red cube"], min_confidence=0.6)
+
+    assert detector.calls == [
+        ("data/perception_runtime/latest_rgb.png", ["black cube", "red cube"], 0.6)
+    ]
+    assert result["status"] == "SUCCESS"
+    assert result["query_results"][1]["status"] == "NOT_FOUND"
+
+
+def test_detect_objects_preserves_multi_query_worker_failure():
+    class FailedMultiQueryDetector:
+        def detect_many(self, image_path, queries, min_confidence):
+            return {"status": "FAILED", "message": "worker stopped", "query_results": []}
+
+    backend = D435iBackend(
+        config={"wait_timeout_sec": 0.0}, detector_adapter=FailedMultiQueryDetector(),
+    )
+    backend.latest_rgb_msg = object()
+    backend._save_latest_rgb_frame = Mock(return_value={
+        "status": "SUCCESS", "message": "saved", "path": "data/perception_runtime/latest_rgb.png",
+    })
+
+    result = backend.detect_objects(["black cube"])
+
+    assert result["status"] == "FAILED"
+
+
 def test_detect_object_estimates_pose_when_depth_and_camera_info_available():
     detector = Mock()
     detector.detect.return_value = {

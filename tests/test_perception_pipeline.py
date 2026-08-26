@@ -36,3 +36,12 @@ def test_detect_object_returns_success_false_when_backend_is_unavailable():
 
     assert result["success"] is False
     assert result["status"] == "NOT_AVAILABLE"
+
+
+def test_detect_objects_returns_one_scene_and_per_query_statuses_when_unavailable():
+    result = PerceptionPipeline().detect_objects(["black cube", "red cube"])
+
+    assert result["success"] is False
+    assert result["status"] == "NOT_AVAILABLE"
+    assert result["objects"] == []
+    assert [item["query"] for item in result["query_results"]] == ["black cube", "red cube"]

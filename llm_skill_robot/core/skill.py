@@ -5,6 +5,7 @@ from enum import Enum
 
 class ParameterType(str, Enum):
     STRING = "string"
+    STRING_LIST = "string_list"
     FLOAT = "float"
     INT = "int"
     BOOL = "bool"

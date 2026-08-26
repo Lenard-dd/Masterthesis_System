@@ -98,7 +98,8 @@ class AgentController:
         "抓住", "抓起", "つかむ", "持ち上げる", "greifen", "aufheben",
     )
     _OBSERVE_TERMS = (
-        "observe", "detect", "find", "locate", "look", "识别", "检测", "寻找",
+        "observe", "detect", "find", "locate", "localize", "localise",
+        "localization", "look", "识别", "检测", "定位", "查找", "寻找",
         "查看", "观察", "发现", "検出", "探す", "erkennen", "finden",
     )
     _SCENE_DESCRIPTION_TERMS = (
@@ -284,7 +285,12 @@ class AgentController:
                 "goal_routing": (
                     "Choose only an action that matches the user goal and the allowed "
                     "next actions. For scene-description requests use describe_scene; "
-                    "for precise object observation use detect_object. For a "
+                    "for precise localization of one object use detect_object with "
+                    "a single query. When the user asks to localize, find, or detect "
+                    "two or more distinct objects, use detect_objects exactly once "
+                    "with arguments.queries containing one exact query per object. "
+                    "Do not split a multi-object localization request into several "
+                    "detect_object calls. For a "
                     "named target movement use move_to_named_target. For a task outside "
                     "the available capabilities, or for an ambiguous target, return "
                     "kind='request_human' rather than selecting a grasp skill."
@@ -347,7 +353,11 @@ class AgentController:
         if scene_description_requested:
             actions.add("describe_scene")
         if self._contains_any(goal, self._OBSERVE_TERMS) and not scene_description_requested:
-            actions.update({"detect_object", "move_to_named_target"})
+            # The LLM receives both localization schemas and selects the
+            # one-object or multi-object form from the user's wording.
+            # ``move_to_named_target`` is retained for existing reviewed
+            # observe-then-move workflows; it remains subject to verification.
+            actions.update({"detect_object", "detect_objects", "move_to_named_target"})
         if self._contains_any(goal, self._PLACE_TERMS):
             actions.add("place_object")
         if self._contains_any(goal, self._MOVE_TERMS):

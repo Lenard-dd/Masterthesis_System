@@ -65,7 +65,7 @@ class AgentTool:
     @staticmethod
     def _default_safety_tier(skill_id: str) -> ToolSafetyTier:
         if skill_id in {
-            "describe_scene", "detect_object", "build_object_point_cloud", "generate_grasp_pose",
+            "describe_scene", "detect_object", "detect_objects", "build_object_point_cloud", "generate_grasp_pose",
             "get_gripper_state", "verify_grasp",
         }:
             return ToolSafetyTier.OBSERVE
@@ -109,6 +109,7 @@ class AgentTool:
     def _python_type(parameter: Parameter) -> type:
         return {
             ParameterType.STRING: str,
+            ParameterType.STRING_LIST: list[str],
             ParameterType.FLOAT: float,
             ParameterType.INT: int,
             ParameterType.BOOL: bool,

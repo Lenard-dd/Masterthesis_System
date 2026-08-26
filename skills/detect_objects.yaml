@@ -1,0 +1,24 @@
+skill_id: "detect_objects"
+name: "Localize Multiple Objects"
+description: "Ground multiple requested objects from one D435i RGB-D frame using SAM3 masks and estimate their spatial poses."
+parameters:
+  - name: "queries"
+    type: "string_list"
+    required: true
+  - name: "min_confidence"
+    type: "float"
+    required: false
+    default: 0.5
+    min_value: 0.0
+    max_value: 1.0
+  - name: "require_pose"
+    type: "bool"
+    required: false
+    default: true
+preconditions:
+  - "perception_available"
+effects:
+  - "multi_object_localization_attempted"
+  - "scene_model_updated_from_single_rgbd_frame"
+execution:
+  backend_method: "detect_objects"

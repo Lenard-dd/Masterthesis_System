@@ -19,3 +19,16 @@ class PerceptionSkillBackend:
             min_confidence=min_confidence,
             require_pose=require_pose,
         )
+
+    def detect_objects(
+        self,
+        queries: list[str],
+        min_confidence: float = 0.5,
+        require_pose: bool = True,
+        **_kwargs,
+    ) -> dict:
+        return self.pipeline.detect_objects(
+            queries=queries,
+            min_confidence=min_confidence,
+            require_pose=require_pose,
+        )

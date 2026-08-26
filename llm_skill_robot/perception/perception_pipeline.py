@@ -38,3 +38,25 @@ class PerceptionPipeline:
 
     def get_latest_scene(self) -> SceneModel:
         return self.latest_scene
+
+    def detect_objects(
+        self,
+        queries: list[str],
+        min_confidence: float = 0.5,
+        require_pose: bool = True,
+    ) -> dict:
+        result = self.backend.detect_objects(
+            queries=queries,
+            min_confidence=min_confidence,
+            require_pose=require_pose,
+        )
+        scene_data = result.get("scene") if isinstance(result, dict) else None
+        if scene_data is not None:
+            self.latest_scene = SceneModel.model_validate(scene_data)
+        return {
+            **result,
+            "success": result.get("status") == "SUCCESS",
+            "objects": result.get("objects", []),
+            "scene": self.latest_scene.model_dump(),
+            "query_results": result.get("query_results", []),
+        }

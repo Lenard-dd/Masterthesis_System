@@ -104,6 +104,34 @@ def test_scene_description_proposal_skips_human_approval_gate():
     assert proposal.approval_stages == []
 
 
+def test_localization_goal_allows_single_and_multi_object_localization_tools():
+    controller = AgentController(FakeLLMClient([]))
+
+    assert controller._allowed_actions_for_goal(
+        AgentState(user_goal="localize pen and black cube")
+    ) == {"detect_object", "detect_objects", "move_to_named_target"}
+
+
+def test_agent_accepts_one_multi_object_localization_call():
+    client = FakeLLMClient([json.dumps({
+        "kind": "tool_call",
+        "message": "Localize both requested objects from one RGB-D frame.",
+        "tool_call": {
+            "tool_name": "detect_objects",
+            "arguments": {"queries": ["pen", "black cube"]},
+        },
+    })])
+
+    proposal = AgentController(client).propose_next_action(
+        AgentState(user_goal="localize pen and black cube")
+    )
+
+    assert proposal.plan_step.skill_id == "detect_objects"
+    assert proposal.plan_step.parameters["queries"] == ["pen", "black cube"]
+    prompt = client.messages[0][1]["content"]
+    assert "multi-object localization" in prompt
+
+
 def test_scene_scan_wording_and_common_typo_route_to_scene_description_without_llm():
     client = FakeLLMClient([])
 

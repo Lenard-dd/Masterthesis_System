@@ -160,6 +160,96 @@ class D435iBackend(BasePerceptionBackend):
             scene=self.latest_scene,
         )
 
+    def detect_objects(
+        self,
+        queries: list[str],
+        min_confidence: float = 0.5,
+        require_pose: bool = True,
+    ) -> dict:
+        """Localize several requested objects from one saved RGB-D frame."""
+        normalized_queries = list(dict.fromkeys(
+            query.strip() for query in queries if isinstance(query, str) and query.strip()
+        ))
+        if not normalized_queries:
+            return self._multi_detection_failure("FAILED", "detect_objects requires at least one non-empty query.")
+        if not self._wait_for_rgb_frame():
+            return self._multi_detection_failure(
+                "NOT_AVAILABLE",
+                f"No RGB frame received within {self.config['wait_timeout_sec']} seconds. "
+                f"{self._debug_message('NOT_AVAILABLE')}",
+            )
+        save_result = self._save_latest_rgb_frame()
+        if save_result["status"] != "SUCCESS":
+            return self._multi_detection_failure(save_result["status"], save_result["message"])
+        if self.detector_adapter is None:
+            return self._multi_detection_failure("NOT_AVAILABLE", "No detector adapter configured.")
+
+        objects: list[SceneObject] = []
+        query_results: list[dict[str, Any]] = []
+        multi_status: str | None = None
+        detect_many = getattr(type(self.detector_adapter), "detect_many", None)
+        if callable(detect_many):
+            multi_result = self.detector_adapter.detect_many(
+                save_result["path"], normalized_queries, min_confidence,
+            )
+            multi_status = str(multi_result.get("status", "FAILED"))
+            raw_query_results = multi_result.get("query_results", [])
+        else:
+            # Compatibility path for custom detectors that only implement the
+            # original one-query protocol.
+            raw_query_results = [
+                {"query": query, **self.detector_adapter.detect(save_result["path"], query, min_confidence)}
+                for query in normalized_queries
+            ]
+        for raw_result in raw_query_results:
+            query = str(raw_result.get("query", ""))
+            detector_status = str(raw_result.get("status", "FAILED"))
+            query_objects = self._detections_to_scene_objects(raw_result.get("detections", []))
+            for item in query_objects:
+                objects.append(item.model_copy(update={
+                    "object_id": f"{self._object_id_label(item.label)}_{len(objects) + 1}",
+                    "metadata": {**item.metadata, "query": query},
+                }))
+            query_results.append({
+                "query": query,
+                "status": detector_status,
+                "message": str(raw_result.get("message", "")),
+                "object_count": len(query_objects),
+            })
+
+        self.latest_scene = SceneModel(
+            objects=objects, frame=self._scene_frame(objects), source="d435i_sam3",
+        )
+        if objects:
+            status = "SUCCESS"
+        elif any(item["status"] == "NOT_AVAILABLE" for item in query_results):
+            status = "NOT_AVAILABLE"
+        elif any(item["status"] == "FAILED" for item in query_results):
+            status = "FAILED"
+        elif multi_status in {"NOT_AVAILABLE", "FAILED"}:
+            # Preserve a worker-level failure even when it could not return
+            # individual query results.
+            status = multi_status
+        else:
+            status = "NOT_FOUND"
+        return {
+            "status": status,
+            "message": f"Localized {len(objects)} object(s) from one RGB-D frame for {len(normalized_queries)} query(ies).",
+            "objects": [item.model_dump() for item in objects],
+            "scene": self.latest_scene.model_dump(),
+            "query_results": query_results,
+            "image_path": save_result["path"],
+        }
+
+    def _multi_detection_failure(self, status: str, message: str) -> dict:
+        return {
+            "status": status,
+            "message": message,
+            "objects": [],
+            "scene": self.get_scene().model_dump(),
+            "query_results": [],
+        }
+
     def get_scene(self) -> SceneModel:
         return self.latest_scene
 

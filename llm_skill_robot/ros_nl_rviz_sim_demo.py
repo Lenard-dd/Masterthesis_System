@@ -44,7 +44,7 @@ GRIPPER_SKILL_IDS = {
     "set_gripper_width",
     "get_gripper_state",
 }
-PERCEPTION_SKILL_IDS = {"detect_object", "build_object_point_cloud"}
+PERCEPTION_SKILL_IDS = {"detect_object", "detect_objects", "build_object_point_cloud"}
 GRASP_PLANNING_SKILL_IDS = {"generate_grasp_pose", "review_grasp_candidate"}
 OBJECT_RELATED_SKILL_IDS = {"pick_object", "place_object"}
 
@@ -223,6 +223,42 @@ def execute_non_motion_skill(
             "status": result.get("status"),
             "message": result.get("message"),
             "objects": result.get("objects", []),
+            "scene": result.get("scene", {}),
+            "output": result,
+        }
+
+    if step.skill_id == "detect_objects":
+        perception_pipeline = perception_pipeline or PerceptionPipeline()
+        parameters = dict(step.parameters)
+        try:
+            result = perception_pipeline.detect_objects(
+                queries=parameters.get("queries", []),
+                min_confidence=parameters.get("min_confidence", 0.5),
+                require_pose=parameters.get("require_pose", True),
+            )
+        except Exception as exc:
+            result = {
+                "success": False,
+                "status": "FAILED",
+                "message": f"detect_objects failed: {exc}",
+                "objects": [],
+                "scene": perception_pipeline.get_latest_scene().model_dump(),
+                "query_results": [],
+            }
+        latest_scene = perception_pipeline.get_latest_scene()
+        context["scene"] = latest_scene
+        context["localized_objects"] = result.get("objects", [])
+        context["perception_available"] = result.get("status") != "NOT_AVAILABLE"
+        return {
+            "step_id": step.step_id,
+            "skill_id": step.skill_id,
+            "parameters": parameters,
+            "mode": "rviz_sim",
+            "success": result.get("success", False),
+            "status": result.get("status"),
+            "message": result.get("message"),
+            "objects": result.get("objects", []),
+            "query_results": result.get("query_results", []),
             "scene": result.get("scene", {}),
             "output": result,
         }

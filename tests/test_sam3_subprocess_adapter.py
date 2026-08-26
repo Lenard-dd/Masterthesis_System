@@ -53,6 +53,64 @@ def test_builds_expected_command(tmp_path):
     ]
 
 
+def test_builds_persistent_worker_command(tmp_path):
+    runner = _make_runner(tmp_path)
+    adapter = SAM3SubprocessAdapter(
+        {
+            "conda_env": "sam3",
+            "conda_executable": "conda",
+            "runner_script": str(runner),
+            "device": "cuda",
+            "checkpoint_path": "checkpoint.pt",
+        }
+    )
+
+    assert adapter._build_worker_command() == [
+        "conda",
+        "run",
+        "--no-capture-output",
+        "-n",
+        "sam3",
+        "python",
+        str(runner),
+        "--serve",
+        "--device",
+        "cuda",
+        "--checkpoint",
+        "checkpoint.pt",
+    ]
+
+
+def test_normalize_multi_result_preserves_each_query_result():
+    result = SAM3SubprocessAdapter._normalize_multi_result(
+        {
+            "status": "SUCCESS",
+            "message": "processed",
+            "query_results": [
+                {
+                    "query": "black cube",
+                    "status": "SUCCESS",
+                    "message": "found",
+                    "detections": [{"label": "black cube"}],
+                },
+                {
+                    "query": "red cube",
+                    "status": "NOT_FOUND",
+                    "message": "none",
+                    "detections": [],
+                },
+            ],
+        }
+    )
+
+    assert result["status"] == "SUCCESS"
+    assert [item["query"] for item in result["query_results"]] == [
+        "black cube",
+        "red cube",
+    ]
+    assert result["query_results"][0]["detections"] == [{"label": "black cube"}]
+
+
 def test_missing_runner_script_returns_not_available(tmp_path):
     adapter = SAM3SubprocessAdapter({"runner_script": str(tmp_path / "missing.py")})
 

@@ -20,6 +20,9 @@ sam3_subprocess:
   conda_env: sam3
   conda_executable: conda
   runner_script: scripts/sam3_runner.py
+  # Multi-object localization keeps one SAM3 worker alive. The worker loads
+  # weights once and encodes each RGB image once before applying each text query.
+  persistent_worker: true
   timeout_sec: 60.0
   output_dir: data/perception_outputs
   save_debug_overlay: true

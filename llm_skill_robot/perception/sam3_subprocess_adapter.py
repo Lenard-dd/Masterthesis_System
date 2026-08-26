@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +28,7 @@ class SAM3SubprocessAdapter:
         "checkpoint_path": "",
         "model_config": "",
         "pytorch_cuda_alloc_conf": "",
+        "persistent_worker": True,
     }
 
     def __init__(self, config: dict | None = None):
@@ -35,6 +39,10 @@ class SAM3SubprocessAdapter:
         self.config["runner_script"] = str(
             self._resolve_runner_script(str(self.config["runner_script"]))
         )
+        self._worker: subprocess.Popen | None = None
+        self._worker_responses: queue.Queue[str] = queue.Queue()
+        self._worker_lock = threading.Lock()
+        self._worker_request_id = 0
 
     def is_available(self) -> bool:
         """Return whether the subprocess entry point can be invoked."""
@@ -116,6 +124,171 @@ class SAM3SubprocessAdapter:
             )
 
         return self._normalize_result(parsed)
+
+    def detect_many(
+        self,
+        rgb_image_path: str,
+        queries: list[str],
+        min_confidence: float = 0.5,
+    ) -> dict:
+        """Run several text queries with one persistent SAM3 image session.
+
+        The worker loads model weights once and executes ``set_image`` once
+        per call. Individual prompts still receive independent masks and
+        confidence scores.
+        """
+        normalized_queries = list(
+            dict.fromkeys(
+                query.strip()
+                for query in queries
+                if isinstance(query, str) and query.strip()
+            )
+        )
+        if not normalized_queries:
+            return {
+                "status": "FAILED",
+                "message": "No non-empty SAM3 queries supplied.",
+                "query_results": [],
+            }
+        if not self.config.get("persistent_worker", True):
+            return self._detect_many_one_shot(rgb_image_path, normalized_queries, min_confidence)
+        if not self.config.get("enabled", True):
+            return {
+                "status": "NOT_AVAILABLE",
+                "message": "SAM3 subprocess detector is disabled.",
+                "query_results": [],
+            }
+        if not Path(str(self.config["runner_script"])).exists():
+            return {
+                "status": "NOT_AVAILABLE",
+                "message": "SAM3 runner script does not exist.",
+                "query_results": [],
+            }
+
+        with self._worker_lock:
+            try:
+                self._ensure_worker()
+                self._worker_request_id += 1
+                request_id = self._worker_request_id
+                assert self._worker is not None and self._worker.stdin is not None
+                self._worker.stdin.write(json.dumps({
+                    "id": request_id,
+                    "image": rgb_image_path,
+                    "queries": normalized_queries,
+                    "min_confidence": min_confidence,
+                    "output_dir": str(self.config["output_dir"]),
+                }) + "\n")
+                self._worker.stdin.flush()
+                response = self._read_worker_response(request_id)
+            except (OSError, RuntimeError, queue.Empty) as exc:
+                self.close()
+                return {
+                    "status": "FAILED",
+                    "message": f"SAM3 persistent worker failed: {exc}",
+                    "query_results": [],
+                }
+        return self._normalize_multi_result(response)
+
+    def close(self) -> None:
+        """Stop the optional worker and release its GPU/model memory."""
+        worker, self._worker = self._worker, None
+        if worker is None:
+            return
+        try:
+            if worker.stdin is not None:
+                worker.stdin.close()
+            worker.terminate()
+            worker.wait(timeout=3.0)
+        except (OSError, subprocess.SubprocessError):
+            try:
+                worker.kill()
+            except OSError:
+                pass
+
+    def _detect_many_one_shot(
+        self,
+        image_path: str,
+        queries: list[str],
+        confidence: float,
+    ) -> dict:
+        results = [
+            {"query": query, **self.detect(image_path, query, confidence)}
+            for query in queries
+        ]
+        status = (
+            "SUCCESS"
+            if any(item["status"] == "SUCCESS" for item in results)
+            else results[-1]["status"]
+        )
+        return {
+            "status": status,
+            "message": "SAM3 queries completed.",
+            "query_results": results,
+        }
+
+    def _ensure_worker(self) -> None:
+        if self._worker is not None and self._worker.poll() is None:
+            return
+        self.close()
+        self._worker_responses = queue.Queue()
+        self._worker = subprocess.Popen(
+            self._build_worker_command(),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            # Responses are JSONL on stdout.  Suppress library diagnostics so
+            # their pipe cannot fill and block a long-lived worker.
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+            env=self._build_environment(),
+        )
+        assert self._worker.stdout is not None
+        threading.Thread(
+            target=self._collect_worker_stdout,
+            args=(self._worker.stdout,), daemon=True,
+        ).start()
+
+    def _collect_worker_stdout(self, stream) -> None:
+        for line in stream:
+            self._worker_responses.put(line)
+
+    def _read_worker_response(self, request_id: int) -> dict:
+        deadline = time.monotonic() + float(self.config["timeout_sec"])
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise queue.Empty()
+            try:
+                line = self._worker_responses.get(timeout=min(remaining, 0.2))
+            except queue.Empty:
+                if self._worker is not None and self._worker.poll() is not None:
+                    raise RuntimeError("SAM3 persistent worker exited before replying.")
+                continue
+            try:
+                response = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # tolerate library startup logs emitted on stdout
+            if response.get("id") is None and response.get("status") in {
+                "NOT_AVAILABLE",
+                "FAILED",
+            }:
+                raise RuntimeError(str(response.get("message", "SAM3 worker failed to start.")))
+            if response.get("id") == request_id:
+                return response
+
+    def _build_worker_command(self) -> list[str]:
+        command = [
+            str(self.config["conda_executable"]), "run", "--no-capture-output", "-n",
+            str(self.config["conda_env"]), "python", str(self.config["runner_script"]), "--serve",
+            "--device", str(self.config.get("device") or "auto"),
+        ]
+        checkpoint_path = str(self.config.get("checkpoint_path") or "")
+        if checkpoint_path:
+            command.extend(["--checkpoint", checkpoint_path])
+        model_config = str(self.config.get("model_config") or "")
+        if model_config:
+            command.extend(["--model-config", model_config])
+        return command
 
     def _build_command(
         self,
@@ -199,6 +372,34 @@ class SAM3SubprocessAdapter:
             "status": status,
             "message": str(value.get("message", "")),
             "detections": detections,
+        }
+
+    @classmethod
+    def _normalize_multi_result(cls, value: Any) -> dict:
+        if not isinstance(value, dict):
+            return {
+                "status": "FAILED",
+                "message": "SAM3 worker JSON must be an object.",
+                "query_results": [],
+            }
+        status = value.get("status", "FAILED")
+        if status not in {"SUCCESS", "NOT_FOUND", "NOT_AVAILABLE", "FAILED"}:
+            status = "FAILED"
+        results = value.get("query_results", [])
+        if not isinstance(results, list):
+            results = []
+        normalized = []
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            normalized.append({
+                "query": str(item.get("query", "")),
+                **cls._normalize_result(item),
+            })
+        return {
+            "status": status,
+            "message": str(value.get("message", "")),
+            "query_results": normalized,
         }
 
     @staticmethod

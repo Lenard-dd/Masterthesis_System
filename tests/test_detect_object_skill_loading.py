@@ -31,3 +31,13 @@ def test_detect_object_backend_method():
     skill = library.get_skill("detect_object")
 
     assert skill.execution.backend_method == "detect_object"
+
+
+def test_detect_objects_skill_accepts_a_required_string_list_of_queries():
+    skill = SkillLibrary().get_skill("detect_objects")
+    parameters = {parameter.name: parameter for parameter in skill.parameters}
+
+    assert skill is not None
+    assert parameters["queries"].required is True
+    assert parameters["queries"].type == "string_list"
+    assert skill.execution.backend_method == "detect_objects"

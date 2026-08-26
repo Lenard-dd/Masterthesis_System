@@ -77,6 +77,49 @@ def test_detect_object_step_dispatches_to_default_unavailable_backend():
     assert context["scene"].objects == []
 
 
+class _MultiObjectBackend:
+    def detect_objects(self, queries, min_confidence=0.5, require_pose=True):
+        objects = [
+            SceneObject(
+                object_id=f"{query}_1", label=query, confidence=0.9,
+                pose_available=True,
+                pose=ObjectPose(frame="base_link", x=index, y=0.0, z=0.1),
+                source="d435i_sam3",
+            )
+            for index, query in enumerate(queries)
+        ]
+        scene = SceneModel(objects=objects, frame="base_link", source="d435i_sam3")
+        return {
+            "status": "SUCCESS",
+            "message": "localized",
+            "objects": [item.model_dump() for item in objects],
+            "scene": scene.model_dump(),
+            "query_results": [{"query": query, "status": "SUCCESS", "object_count": 1} for query in queries],
+        }
+
+
+def test_detect_objects_dispatches_one_multi_object_result_into_context():
+    context = {}
+    step = PlanStep(
+        step_id="1",
+        skill_id="detect_objects",
+        description="Localize three cubes",
+        parameters={"queries": ["black cube", "red cube", "white cube"]},
+    )
+
+    result = execute_non_motion_skill(
+        step,
+        gripper_backend=None,
+        context=context,
+        perception_pipeline=PerceptionPipeline(_MultiObjectBackend()),
+    )
+
+    assert result["success"] is True
+    assert len(result["objects"]) == 3
+    assert len(context["localized_objects"]) == 3
+    assert context["scene"].frame == "base_link"
+
+
 def test_pick_object_after_unavailable_detection_is_blocked():
     context = {}
     detect_step = PlanStep(
