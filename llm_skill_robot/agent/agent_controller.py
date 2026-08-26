@@ -440,10 +440,10 @@ class AgentController:
     def _with_approval_policy(self, state: AgentState, proposal: AgentProposal) -> AgentProposal:
         """Attach A/B/C/D gates based on the reviewed action category."""
         tool_name = proposal.plan_step.skill_id if proposal.plan_step else None
-        # A scene description is an explicitly read-only camera/LLM
-        # observation. It creates no geometric target and cannot command the
-        # robot, so it may run without a task-intent approval gate.
-        if tool_name == "describe_scene":
+        # Scene description and object localization are read-only perception
+        # operations. They cannot command the robot; localization only
+        # produces geometry for a later, separately reviewed manipulation.
+        if tool_name in {"describe_scene", "detect_object", "detect_objects"}:
             proposal.approval_stages = []
             proposal.requires_human_gate = False
             return proposal

@@ -36,8 +36,8 @@ def test_agent_proposes_one_valid_observation_tool_and_records_feedback():
 
     assert proposal.plan_step.skill_id == "detect_object"
     assert proposal.plan_step.step_id == "1"
-    assert proposal.requires_human_gate is True
-    assert proposal.approval_stages == [ApprovalStage.TASK_INTENT]
+    assert proposal.requires_human_gate is False
+    assert proposal.approval_stages == []
     assert state.proposed_calls[-1].tool_name == "detect_object"
     assert "tool_catalog" in client.messages[0][1]["content"]
 
@@ -128,6 +128,8 @@ def test_agent_accepts_one_multi_object_localization_call():
 
     assert proposal.plan_step.skill_id == "detect_objects"
     assert proposal.plan_step.parameters["queries"] == ["pen", "black cube"]
+    assert proposal.requires_human_gate is False
+    assert proposal.approval_stages == []
     prompt = client.messages[0][1]["content"]
     assert "multi-object localization" in prompt
 

@@ -67,7 +67,7 @@ def _controller_for(tool_name, arguments):
     })))
 
 
-def test_runtime_verifies_executes_and_feeds_back_after_task_intent_approval():
+def test_runtime_verifies_executes_and_feeds_back_for_read_only_observation():
     executor = FakeExecutionManager()
     runtime = AgentRuntime(
         _controller_for("detect_object", {"query": "red cube"}),
@@ -83,7 +83,7 @@ def test_runtime_verifies_executes_and_feeds_back_after_task_intent_approval():
     assert turn.human_decision.decision == ValidationDecision.APPROVE
     assert turn.tool_result.success is True
     assert state.context["last_tool_result"]["output"]["object_id"] == "cube_1"
-    assert state.context["task_intent_approved"] is True
+    assert "task_intent_approved" not in state.context
 
 
 def test_runtime_never_executes_a_verifier_blocked_tool():
