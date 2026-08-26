@@ -104,6 +104,19 @@ def test_scene_description_proposal_skips_human_approval_gate():
     assert proposal.approval_stages == []
 
 
+def test_scene_scan_wording_and_common_typo_route_to_scene_description_without_llm():
+    client = FakeLLMClient([])
+
+    proposal = AgentController(client).propose_next_action(
+        AgentState(user_goal="scan the senario")
+    )
+
+    assert proposal.plan_step.skill_id == "describe_scene"
+    assert proposal.requires_human_gate is False
+    assert "interpret" in proposal.decision.message
+    assert client.messages == []
+
+
 def test_agent_can_start_a_composite_safe_pick_without_exposing_its_stages_to_llm():
     client = FakeLLMClient([json.dumps({
         "kind": "composite_skill_call",
@@ -206,5 +219,5 @@ def test_agent_can_pause_for_human_and_be_resumed():
 def test_invalid_decision_json_is_rejected():
     with pytest.raises(AgentDecisionError, match="valid AgentDecision JSON"):
         AgentController(FakeLLMClient(["not json"])).propose_next_action(
-            AgentState(user_goal="inspect scene")
+            AgentState(user_goal="pick the blue object")
         )

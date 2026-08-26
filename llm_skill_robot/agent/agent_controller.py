@@ -105,6 +105,14 @@ class AgentController:
         "describe scene", "describe the scene", "scan scene", "scene overview", "what is on the table",
         "场景描述", "扫描场景", "识别场景", "环境识别", "场景信息", "桌面上有什么",
     )
+    _SCENE_SCAN_VERBS = (
+        "scan", "describe", "analyse", "analyze", "summarize", "inspect",
+        "扫描", "描述", "分析", "查看",
+    )
+    _SCENE_NOUNS = (
+        "scene", "scenario", "senario", "workspace", "environment", "tabletop", "table",
+        "场景", "环境", "桌面", "工作区",
+    )
     _PLACE_TERMS = (
         "place", "put", "drop", "放置", "放下", "摆放", "置于", "置く",
         "置いて", "ablegen", "platzieren",
@@ -155,6 +163,17 @@ class AgentController:
         if state.status != AgentStatus.ACTIVE:
             raise AgentDecisionError(
                 f"Cannot decide next action while agent is {state.status.value}."
+            )
+        # Scene scanning is read-only and has a deliberately narrow argument
+        # schema. Route clear near-matches deterministically so common wording
+        # such as "scan the scenario" (or its frequent typo "senario") does
+        # not depend on an LLM choosing the exact registered phrase.
+        if self._scene_description_requested(state.user_goal):
+            return self.prepare_tool_call(
+                state,
+                AgentToolCall(tool_name="describe_scene", arguments={}),
+                "I interpret this as a request to describe the current scene. "
+                "I will run a read-only scene scan now.",
             )
         response = self.llm_client.generate_text(self._build_messages(state))
         decision = self._parse_decision(response)
@@ -316,9 +335,7 @@ class AgentController:
         """
         goal = self._normalized_goal(state.user_goal)
         actions: set[str] = set()
-        scene_description_requested = self._contains_any(
-            goal, self._SCENE_DESCRIPTION_TERMS
-        )
+        scene_description_requested = self._scene_description_requested(goal)
         pick_requested = self._contains_any(goal, self._PICK_TERMS)
         if pick_requested:
             # The Composite Skill owns its internal grasp sequence. Additional
@@ -352,6 +369,17 @@ class AgentController:
     @staticmethod
     def _contains_any(goal: str, aliases: tuple[str, ...]) -> bool:
         return any(alias in goal for alias in aliases)
+
+    @classmethod
+    def _scene_description_requested(cls, goal: str) -> bool:
+        """Recognize scene scans while tolerating ordinary wording mistakes."""
+        normalized = cls._normalized_goal(goal)
+        if cls._contains_any(normalized, cls._SCENE_DESCRIPTION_TERMS):
+            return True
+        return (
+            cls._contains_any(normalized, cls._SCENE_SCAN_VERBS)
+            and cls._contains_any(normalized, cls._SCENE_NOUNS)
+        )
 
     def _apply_goal_policy(self, state: AgentState, decision: AgentDecision) -> AgentDecision:
         """Reject unsafe or unsupported routing before creating a plan proposal."""
