@@ -40,6 +40,8 @@ def test_between_uses_reference_midpoint_and_source_table_height():
     assert pose["y"] == pytest.approx(0.10)
     assert pose["z"] == pytest.approx(0.023)
     assert result["requires_confirmation"] is True
+    assert result["source_pose"]["x"] == pytest.approx(0.10)
+    assert len(result["reference_poses"]) == 2
 
 
 def test_right_of_uses_object_extents_and_clearance():

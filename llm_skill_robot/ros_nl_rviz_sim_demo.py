@@ -161,6 +161,7 @@ def execute_non_motion_skill(
     point_cloud_builder: ObjectPointCloudBuilder | None = None,
     grasp_planner: GraspGenXGraspPlanner | None = None,
     scene_description_backend=None,
+    place_pose_visualizer=None,
 ) -> Dict[str, Any]:
     context = context if context is not None else {}
     if step.skill_id == "describe_scene":
@@ -288,6 +289,8 @@ def execute_non_motion_skill(
             }
         if result.get("success"):
             context["place_pose_plan"] = result
+            if place_pose_visualizer is not None:
+                result["rviz_preview"] = place_pose_visualizer.publish(result)
         return {
             "step_id": step.step_id,
             "skill_id": step.skill_id,

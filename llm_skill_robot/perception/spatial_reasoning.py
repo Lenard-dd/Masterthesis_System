@@ -101,6 +101,8 @@ class RelativePlacePosePlanner:
             "source_object_id": source.object_id,
             "reference_object_ids": [reference.object_id for reference in references],
             "relation": normalized_relation,
+            "source_pose": source_pose.model_dump(),
+            "reference_poses": [pose.model_dump() for pose in reference_poses],
             "target_pose": target.model_dump(),
             "requires_confirmation": True,
             "assumptions": {
