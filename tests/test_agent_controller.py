@@ -145,6 +145,21 @@ def test_relative_place_goal_allows_plan_only_place_pose_computation():
     assert "place_object" not in allowed
 
 
+def test_localize_then_relative_place_goal_forces_multi_object_localization_first():
+    controller = AgentController(FakeLLMClient([]))
+
+    allowed = controller._allowed_actions_for_goal(
+        AgentState(
+            user_goal=(
+                "detect and compute a plan-only pose to place apple "
+                "between black cube and white cube"
+            )
+        )
+    )
+
+    assert allowed == {"detect_objects"}
+
+
 def test_scene_scan_wording_and_common_typo_route_to_scene_description_without_llm():
     client = FakeLLMClient([])
 

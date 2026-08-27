@@ -294,8 +294,12 @@ class AgentController:
                     "two or more distinct objects, use detect_objects exactly once "
                     "with arguments.queries containing one exact query per object. "
                     "Do not split a multi-object localization request into several "
-                    "detect_object calls. For a "
-                    "relative placement request, use compute_place_pose first. "
+                    "detect_object calls. When a request explicitly combines "
+                    "localization with a relative placement computation, choose "
+                    "detect_objects first; the GUI will run the dependent plan-only "
+                    "compute_place_pose stage only after trusted localization succeeds. "
+                    "For a relative placement request with already-localized objects, "
+                    "use compute_place_pose. "
                     "Convert the requested relation to exactly one of between, "
                     "right_of, left_of, or on_top_of; use localized object IDs or "
                     "unambiguous labels. This tool only computes a pose and does not "
@@ -352,6 +356,11 @@ class AgentController:
         actions: set[str] = set()
         scene_description_requested = self._scene_description_requested(goal)
         pick_requested = self._contains_any(goal, self._PICK_TERMS)
+        localization_requested = self._contains_any(goal, self._OBSERVE_TERMS)
+        relative_place_requested = (
+            self._contains_any(goal, self._PLACE_TERMS)
+            and self._contains_any(goal, self._SPATIAL_RELATION_TERMS)
+        )
         if pick_requested:
             # The Composite Skill owns its internal grasp sequence. Additional
             # primitives are exposed only when separately requested by the
@@ -361,20 +370,32 @@ class AgentController:
             actions.add("safe_pick_object")
         if scene_description_requested:
             actions.add("describe_scene")
-        if self._contains_any(goal, self._OBSERVE_TERMS) and not scene_description_requested:
+        if localization_requested and not scene_description_requested:
             # The LLM receives both localization schemas and selects the
             # one-object or multi-object form from the user's wording.
             # ``move_to_named_target`` is retained for existing reviewed
             # observe-then-move workflows; it remains subject to verification.
             actions.update({"detect_object", "detect_objects", "move_to_named_target"})
         if self._contains_any(goal, self._PLACE_TERMS):
-            if self._contains_any(goal, self._SPATIAL_RELATION_TERMS):
+            if relative_place_requested:
                 # Relative placement is plan-only in this phase. A future
                 # reviewed pick/place workflow may consume this pose, but the
                 # LLM must not jump directly to physical placement.
-                actions.add("compute_place_pose")
+                # If localization was explicitly requested in the same
+                # instruction, it is the mandatory first stage.  The GUI adds
+                # compute_place_pose as a dependency after localization; do
+                # not let the LLM skip directly to metric computation using
+                # stale or absent object coordinates.
+                if not localization_requested:
+                    actions.add("compute_place_pose")
             else:
                 actions.add("place_object")
+        if localization_requested and relative_place_requested:
+            # A relative relation always needs a source plus one or two
+            # references, so force the first Agent turn to use the single
+            # shared-frame multi-object localization tool.
+            actions.difference_update({"detect_object", "move_to_named_target"})
+            actions.add("detect_objects")
         if self._contains_any(goal, self._MOVE_TERMS):
             actions.add("move_to_named_target")
         open_requested = self._contains_any(goal, self._OPEN_GRIPPER_TERMS)
