@@ -145,6 +145,22 @@ def test_relative_place_goal_allows_plan_only_place_pose_computation():
     assert "place_object" not in allowed
 
 
+def test_above_relative_place_uses_existing_localization_without_another_llm_turn():
+    client = FakeLLMClient([])
+    proposal = AgentController(client).propose_next_action(
+        AgentState(user_goal="compute a plan-only pose to place black cube above the white cube")
+    )
+
+    assert proposal.plan_step.skill_id == "compute_place_pose"
+    assert proposal.plan_step.parameters == {
+        "source_id": "black cube",
+        "relation": "on_top_of",
+        "reference_ids": ["white cube"],
+    }
+    assert proposal.requires_human_gate is False
+    assert client.messages == []
+
+
 def test_localize_then_relative_place_goal_forces_multi_object_localization_first():
     controller = AgentController(FakeLLMClient([]))
 

@@ -238,6 +238,25 @@ class RelativePlacePosePlanner:
             except (TypeError, ValueError):
                 dimensions = []
             if all(value > 0.0 for value in dimensions):
-                return ObjectDimensions(*dimensions, estimated=False)
+                height_estimation = scene_object.metadata.get("height_estimation", {})
+                measured_from_point_cloud = isinstance(height_estimation, dict) and bool(
+                    height_estimation.get("usable", False)
+                )
+                return ObjectDimensions(*dimensions, estimated=measured_from_point_cloud)
+        footprint = scene_object.metadata.get("footprint_dimensions_m")
+        if isinstance(footprint, dict):
+            values = [footprint.get(axis) for axis in ("x", "y")]
+        else:
+            values = footprint if isinstance(footprint, (list, tuple)) else []
+        if len(values) >= 2:
+            try:
+                x, y = (float(values[0]), float(values[1]))
+            except (TypeError, ValueError):
+                x = y = 0.0
+            if x > 0.0 and y > 0.0:
+                # A single masked RGB-D view measures the footprint well but
+                # generally cannot observe object thickness.  Keep the height
+                # conservative until a table-plane/multi-view estimator exists.
+                return ObjectDimensions(x, y, self.default_object_size_m, estimated=True)
         default = self.default_object_size_m
         return ObjectDimensions(default, default, default, estimated=True)

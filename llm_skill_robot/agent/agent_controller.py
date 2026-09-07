@@ -8,6 +8,7 @@ HITL gate, state machine, and execution manager.
 from __future__ import annotations
 
 import json
+import re
 from enum import Enum
 from typing import Any
 
@@ -120,7 +121,8 @@ class AgentController:
     )
     _SPATIAL_RELATION_TERMS = (
         "between", "middle", "right of", "right_of", "left of", "left_of",
-        "on top of", "on_top_of", "stack", "中间", "右边", "左边", "上方", "叠放",
+        "on top of", "on_top_of", "above", "over", "stack",
+        "中间", "右边", "左边", "上方", "正上方", "叠放",
     )
     _MOVE_TERMS = (
         "move", "go home", "return home", "回到", "移动", "回原点", "回家",
@@ -179,6 +181,14 @@ class AgentController:
                 AgentToolCall(tool_name="describe_scene", arguments={}),
                 "I interpret this as a request to describe the current scene. "
                 "I will run a read-only scene scan now.",
+            )
+        relative_place_call = self._direct_relative_place_call(state.user_goal)
+        if relative_place_call is not None:
+            return self.prepare_tool_call(
+                state,
+                relative_place_call,
+                "I will compute the requested plan-only relative placement pose "
+                "from the current verified localization results.",
             )
         response = self.llm_client.generate_text(self._build_messages(state))
         decision = self._parse_decision(response)
@@ -426,6 +436,72 @@ class AgentController:
             cls._contains_any(normalized, cls._SCENE_SCAN_VERBS)
             and cls._contains_any(normalized, cls._SCENE_NOUNS)
         )
+
+    @classmethod
+    def _direct_relative_place_call(cls, goal: str) -> AgentToolCall | None:
+        """Parse an unambiguous plan-only relative-place request.
+
+        This is deliberately limited to commands that *do not* also request
+        localization.  Their arguments are still only labels: the downstream
+        planner resolves them against the latest trusted RGB-D scene and fails
+        safely if either label is absent or ambiguous.
+        """
+        normalized = cls._normalized_goal(goal)
+        if cls._contains_any(normalized, cls._OBSERVE_TERMS):
+            return None
+        if not cls._contains_any(normalized, cls._PLACE_TERMS):
+            return None
+
+        def clean(value: str) -> str:
+            value = value.strip(" .,!?:;")
+            return re.sub(r"^(?:the|a|an)\s+", "", value, flags=re.IGNORECASE).strip()
+
+        between = re.search(
+            r"\b(?:place|put)\s+(?P<source>.+?)\s+"
+            r"(?:between|in the middle of)\s+(?P<first>.+?)\s+(?:and|&)\s+(?P<second>[^.!?,;]+)",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        if between:
+            source, first, second = (
+                clean(between.group("source")),
+                clean(between.group("first")),
+                clean(between.group("second")),
+            )
+            if source and first and second:
+                return AgentToolCall(
+                    tool_name="compute_place_pose",
+                    arguments={
+                        "source_id": source,
+                        "relation": "between",
+                        "reference_ids": [first, second],
+                    },
+                )
+
+        for expression, relation in (
+            (r"on top of", "on_top_of"),
+            (r"above", "on_top_of"),
+            (r"over", "on_top_of"),
+            (r"right of", "right_of"),
+            (r"left of", "left_of"),
+        ):
+            match = re.search(
+                rf"\b(?:place|put)\s+(?P<source>.+?)\s+{expression}\s+(?P<reference>[^.!?,;]+)",
+                normalized,
+                flags=re.IGNORECASE,
+            )
+            if match:
+                source, reference = clean(match.group("source")), clean(match.group("reference"))
+                if source and reference:
+                    return AgentToolCall(
+                        tool_name="compute_place_pose",
+                        arguments={
+                            "source_id": source,
+                            "relation": relation,
+                            "reference_ids": [reference],
+                        },
+                    )
+        return None
 
     def _apply_goal_policy(self, state: AgentState, decision: AgentDecision) -> AgentDecision:
         """Reject unsafe or unsupported routing before creating a plan proposal."""

@@ -274,12 +274,20 @@ def execute_non_motion_skill(
         if latest_scene is None and perception_pipeline is not None:
             latest_scene = perception_pipeline.get_latest_scene().model_dump()
         try:
+            geometry_updates = _enrich_relative_place_geometry(
+                latest_scene or {},
+                source_id=str(parameters.get("source_id", "")),
+                reference_ids=list(parameters.get("reference_ids", [])),
+                perception_pipeline=perception_pipeline,
+                point_cloud_builder=point_cloud_builder,
+            )
             result = RelativePlacePosePlanner().compute(
                 latest_scene or {},
                 source_id=str(parameters.get("source_id", "")),
                 relation=str(parameters.get("relation", "")),
                 reference_ids=list(parameters.get("reference_ids", [])),
             )
+            result["geometry_updates"] = geometry_updates
             result["success"] = True
         except Exception as exc:
             result = {
@@ -307,6 +315,11 @@ def execute_non_motion_skill(
         point_cloud_builder = point_cloud_builder or ObjectPointCloudBuilder()
         selected = _resolve_scene_object(step.parameters.get("object_id"), context)
         if selected is None:
+            selected = _resolve_scene_object(
+                step.parameters.get("object_id"),
+                {"scene": perception_pipeline.get_latest_scene()},
+            )
+        if selected is None:
             result = {
                 "success": False,
                 "status": "NOT_FOUND",
@@ -317,17 +330,25 @@ def execute_non_motion_skill(
             readiness = _wait_for_point_cloud_inputs(camera)
             depth_getter = getattr(camera, "_get_latest_depth_image", None)
             camera_config = getattr(camera, "config", {}) or {}
+            source_frame = (
+                camera_config.get("depth_frame", "camera_color_optical_frame")
+                if isinstance(camera_config, dict)
+                else "camera_color_optical_frame"
+            )
+            point_transformer = getattr(camera, "pose_transformer", None)
+            point_cloud_kwargs = {"frame": source_frame}
+            if point_transformer is not None:
+                point_cloud_kwargs["point_transformer"] = point_transformer
             result = point_cloud_builder.build(
                 selected,
                 depth_getter() if callable(depth_getter) else None,
                 getattr(camera, "latest_camera_info_msg", None),
-                frame=(
-                    camera_config.get("depth_frame", "camera_color_optical_frame")
-                    if isinstance(camera_config, dict)
-                    else "camera_color_optical_frame"
-                ),
+                **point_cloud_kwargs,
             )
             result.setdefault("camera_readiness", readiness)
+            if result.get("success"):
+                _apply_point_cloud_geometry(selected, result)
+                result["scene"] = perception_pipeline.get_latest_scene().model_dump()
             if not result.get("success") and not readiness.get("ready", False):
                 topics = camera_config if isinstance(camera_config, dict) else {}
                 result["message"] = (
@@ -488,11 +509,107 @@ def _resolve_scene_object(object_id: Any, context: Dict[str, Any]) -> Any | None
         for value in objects:
             if str(_object_value(value, "object_id", "")) == requested:
                 return value
+        label_matches = [
+            value for value in objects
+            if str(_object_value(value, "label", "")) == requested
+        ]
+        if len(label_matches) == 1:
+            return label_matches[0]
+        # A requested but unknown/ambiguous label must not silently select the
+        # highest-confidence object for a geometric placement calculation.
+        return None
     return max(
         objects,
         key=lambda value: float(_object_value(value, "confidence", 0.0) or 0.0),
         default=None,
     )
+
+
+def _enrich_relative_place_geometry(
+    scene: Any,
+    *,
+    source_id: str,
+    reference_ids: list[str],
+    perception_pipeline: PerceptionPipeline | None,
+    point_cloud_builder: ObjectPointCloudBuilder | None,
+) -> list[dict[str, Any]]:
+    """Attach measured masked-point-cloud footprints before pose computation.
+
+    Geometry enrichment is best effort.  A failed or unavailable point cloud
+    never invents dimensions: the placement planner explicitly falls back to
+    its configured conservative default size.
+    """
+    if perception_pipeline is None:
+        return [{"status": "SKIPPED", "message": "No live perception pipeline."}]
+    builder = point_cloud_builder or ObjectPointCloudBuilder()
+    camera = getattr(perception_pipeline, "backend", None)
+    depth_getter = getattr(camera, "_get_latest_depth_image", None)
+    camera_info = getattr(camera, "latest_camera_info_msg", None)
+    camera_config = getattr(camera, "config", {}) or {}
+    source_frame = (
+        camera_config.get("depth_frame", "camera_color_optical_frame")
+        if isinstance(camera_config, dict)
+        else "camera_color_optical_frame"
+    )
+    transformer = getattr(camera, "pose_transformer", None)
+    depth = depth_getter() if callable(depth_getter) else None
+    updates: list[dict[str, Any]] = []
+    for identifier in [source_id, *reference_ids]:
+        selected = _resolve_scene_object(identifier, {"scene": scene})
+        if selected is None:
+            updates.append({"object": identifier, "status": "NOT_FOUND"})
+            continue
+        point_cloud_kwargs = {"frame": source_frame}
+        if transformer is not None:
+            point_cloud_kwargs["point_transformer"] = transformer
+        result = builder.build(selected, depth, camera_info, **point_cloud_kwargs)
+        if result.get("success"):
+            _apply_point_cloud_geometry(selected, result)
+            updates.append({
+                "object": _object_value(selected, "object_id", identifier),
+                "status": "UPDATED",
+                "footprint_dimensions_m": result.get("footprint_dimensions_m"),
+                "dimensions_frame": result.get("dimensions_frame"),
+            })
+        else:
+            updates.append({
+                "object": _object_value(selected, "object_id", identifier),
+                "status": result.get("status", "FAILED"),
+                "message": result.get("message", "Point-cloud geometry unavailable."),
+            })
+    return updates
+
+
+def _apply_point_cloud_geometry(scene_object: Any, point_cloud: dict[str, Any]) -> None:
+    """Write only frame-compatible, explicitly qualified geometry to a scene object."""
+    metadata = dict(_object_value(scene_object, "metadata", {}) or {})
+    pose = _object_value(scene_object, "pose")
+    pose_frame = _object_value(pose, "frame") if pose is not None else None
+    dimensions_frame = point_cloud.get("dimensions_frame")
+    if pose_frame and dimensions_frame == pose_frame:
+        metadata["footprint_dimensions_m"] = dict(point_cloud.get("footprint_dimensions_m") or {})
+        metadata["visible_aabb_dimensions_m"] = dict(point_cloud.get("visible_aabb_dimensions_m") or {})
+        metadata["dimension_estimation"] = dict(point_cloud.get("dimension_estimation") or {})
+        height_estimation = dict(point_cloud.get("height_estimation") or {})
+        metadata["height_estimation"] = height_estimation
+        if bool(height_estimation.get("usable", False)):
+            footprint = metadata["footprint_dimensions_m"]
+            metadata["dimensions_m"] = {
+                "x": float(footprint["x"]),
+                "y": float(footprint["y"]),
+                "z": float(height_estimation["height_m"]),
+            }
+        metadata["dimension_frame"] = dimensions_frame
+    else:
+        warnings = list(metadata.get("warnings", []) or [])
+        warning = "Point-cloud dimensions were not used because their frame differs from the localized pose frame."
+        if warning not in warnings:
+            warnings.append(warning)
+        metadata["warnings"] = warnings
+    if isinstance(scene_object, dict):
+        scene_object["metadata"] = metadata
+    else:
+        scene_object.metadata = metadata
 
 
 def _wait_for_point_cloud_inputs(camera: Any, timeout_sec: float = 5.0) -> Dict[str, Any]:

@@ -64,6 +64,39 @@ class TFPoseTransformer:
 
         return self._apply_transform_to_pose_dict(pose, transform)
 
+    def transform_points(self, points, source_frame: str, timeout_sec: float = 1.0):
+        """Transform an ``(N, 3)`` point cloud into ``target_frame``.
+
+        The helper is intentionally used only for geometric measurements; the
+        original camera-frame cloud remains available for GraspGenX.
+        """
+        if not self.available or self._buffer is None or self._rclpy is None:
+            return None
+        try:
+            import numpy as np
+
+            values = np.asarray(points, dtype=float)
+            if values.ndim != 2 or values.shape[1] != 3:
+                raise ValueError("points must have shape (N, 3)")
+        except Exception:
+            return None
+        if source_frame == self.target_frame:
+            return values
+        transform = self._lookup_transform(source_frame, timeout_sec)
+        if transform is None:
+            return None
+        translation = transform.transform.translation
+        rotation = transform.transform.rotation
+        quaternion = np.asarray([rotation.x, rotation.y, rotation.z, rotation.w], dtype=float)
+        norm = float(np.linalg.norm(quaternion))
+        if norm <= 1e-12:
+            return None
+        qvec = quaternion[:3] / norm
+        qw = quaternion[3] / norm
+        twice_cross = 2.0 * np.cross(qvec, values)
+        rotated = values + qw * twice_cross + np.cross(qvec, twice_cross)
+        return rotated + np.asarray([translation.x, translation.y, translation.z], dtype=float)
+
     def _lookup_transform(self, source_frame: str, timeout_sec: float):
         deadline = time.monotonic() + max(float(timeout_sec), 0.0)
         while True:

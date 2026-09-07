@@ -73,6 +73,33 @@ def test_on_top_of_uses_both_object_heights():
     assert result["target_pose"]["z"] == pytest.approx(0.073)
 
 
+def test_right_of_uses_measured_point_cloud_footprints_with_conservative_height():
+    scene = SceneModel(objects=[
+        SceneObject(
+            object_id="black_cube_1", label="black cube", confidence=0.9,
+            pose_available=True,
+            pose=ObjectPose(frame="base_link", x=0.10, y=0.10, z=0.02),
+            metadata={"footprint_dimensions_m": {"x": 0.10, "y": 0.06}},
+        ),
+        SceneObject(
+            object_id="white_cube_1", label="white cube", confidence=0.9,
+            pose_available=True,
+            pose=ObjectPose(frame="base_link", x=0.30, y=0.10, z=0.02),
+            metadata={"footprint_dimensions_m": {"x": 0.20, "y": 0.08}},
+        ),
+    ])
+
+    result = RelativePlacePosePlanner().compute(
+        scene,
+        source_id="black_cube_1",
+        relation="right_of",
+        reference_ids=["white_cube_1"],
+    )
+
+    assert result["target_pose"]["x"] == pytest.approx(0.48)
+    assert result["assumptions"]["object_dimensions_estimated"] is True
+
+
 def test_between_requires_two_reference_objects():
     with pytest.raises(SpatialReasoningError, match="exactly 2"):
         RelativePlacePosePlanner().compute(

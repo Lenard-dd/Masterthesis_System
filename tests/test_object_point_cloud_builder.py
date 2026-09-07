@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from llm_skill_robot.perception.object_point_cloud_builder import ObjectPointCloudBuilder
@@ -20,7 +21,12 @@ def test_numpy_camera_info_intrinsics_build_point_cloud(tmp_path):
         "metadata": {"mask_path": str(mask_path)},
     }
     builder = ObjectPointCloudBuilder(
-        {"output_dir": str(tmp_path / "point_clouds"), "depth_scale": 0.001}
+        {
+            "output_dir": str(tmp_path / "point_clouds"),
+            "depth_scale": 0.001,
+            "extent_percentile_low": 0.0,
+            "extent_percentile_high": 100.0,
+        }
     )
 
     result = builder.build(
@@ -34,6 +40,11 @@ def test_numpy_camera_info_intrinsics_build_point_cloud(tmp_path):
     assert result["point_cloud_path"].endswith("red_cube_1.ply")
     assert result["centroid_m"] == {"x": -0.005, "y": -0.005, "z": 1.0}
     assert len(result["planar_principal_axes"]) == 2
+    assert result["visible_aabb_dimensions_m"] == {
+        "x": 0.01, "y": 0.01, "z": 0.0,
+    }
+    assert result["footprint_dimensions_m"] == {"x": 0.01, "y": 0.01}
+    assert result["dimension_estimation"]["height_reliable"] is False
 
 
 def test_namespace_numpy_camera_info_intrinsics_build_point_cloud(tmp_path):
@@ -52,3 +63,33 @@ def test_namespace_numpy_camera_info_intrinsics_build_point_cloud(tmp_path):
 
     assert result["success"] is True
     assert result["num_points"] == 4
+
+
+def test_table_plane_ransac_estimates_object_height_from_mask_and_surrounding_table(tmp_path):
+    mask_path = tmp_path / "object_mask.png"
+    mask = np.zeros((40, 40), dtype=np.uint8)
+    mask[12:28, 12:28] = 255
+    Image.fromarray(mask).save(mask_path)
+    # The table is 1.0 m away; the object top is 5 cm closer to the camera.
+    depth = np.full((40, 40), 1000, dtype=np.uint16)
+    depth[mask > 0] = 950
+    builder = ObjectPointCloudBuilder({
+        "output_dir": str(tmp_path / "clouds"),
+        "table_plane_margin_px": 8,
+        "table_plane_min_points": 100,
+        "extent_percentile_low": 0.0,
+        "extent_percentile_high": 100.0,
+    })
+
+    result = builder.build(
+        {"object_id": "cube", "metadata": {"mask_path": str(mask_path)}},
+        {"image": depth, "encoding": "16UC1"},
+        {"k": np.array([100.0, 0.0, 20.0, 0.0, 100.0, 20.0, 0.0, 0.0, 1.0])},
+    )
+
+    estimate = result["height_estimation"]
+    assert result["success"] is True
+    assert estimate["usable"] is True
+    assert estimate["height_m"] == pytest.approx(0.05, abs=0.001)
+    assert estimate["plane_inlier_ratio"] > 0.95
+    assert result["dimension_estimation"]["height_reliable"] is True

@@ -157,6 +157,77 @@ def test_compute_place_pose_uses_the_trusted_localized_scene_only():
     assert context["place_pose_plan"]["requires_confirmation"] is True
 
 
+class _GeometryCamera:
+    latest_depth_msg = {"image": [[1000]], "encoding": "16UC1"}
+    latest_camera_info_msg = {"k": [100.0, 0, 0, 0, 100.0, 0, 0, 0, 1]}
+    config = {"depth_frame": "camera_color_optical_frame"}
+
+    class pose_transformer:
+        target_frame = "base_link"
+
+    @staticmethod
+    def _get_latest_depth_image():
+        return _GeometryCamera.latest_depth_msg
+
+
+class _GeometryPointCloudBuilder:
+    def build(self, scene_object, depth_frame, camera_info, frame=None, point_transformer=None):
+        assert depth_frame is not None and camera_info is not None
+        assert frame == "camera_color_optical_frame"
+        assert point_transformer.target_frame == "base_link"
+        width = 0.10 if scene_object.object_id == "black_cube_1" else 0.20
+        return {
+            "success": True,
+            "status": "SUCCESS",
+            "footprint_dimensions_m": {"x": width, "y": 0.06},
+            "visible_aabb_dimensions_m": {"x": width, "y": 0.06, "z": 0.01},
+            "dimensions_frame": "base_link",
+            "dimension_estimation": {"height_reliable": True},
+            "height_estimation": {
+                "usable": True,
+                "height_m": 0.05,
+                "confidence": 0.9,
+                "plane_inlier_ratio": 0.95,
+                "method": "tabletop_plane_ransac",
+            },
+        }
+
+
+def test_compute_place_pose_enriches_localized_objects_with_point_cloud_footprints():
+    context = {"scene": SceneModel(objects=[
+        SceneObject(
+            object_id="black_cube_1", label="black cube", confidence=0.9,
+            pose_available=True,
+            pose=ObjectPose(frame="base_link", x=0.10, y=0.0, z=0.02),
+        ),
+        SceneObject(
+            object_id="white_cube_1", label="white cube", confidence=0.9,
+            pose_available=True,
+            pose=ObjectPose(frame="base_link", x=0.30, y=0.0, z=0.02),
+        ),
+    ])}
+    pipeline = PerceptionPipeline()
+    pipeline.backend = _GeometryCamera()
+    step = PlanStep(
+        step_id="2", skill_id="compute_place_pose", description="Plan relative pose",
+        parameters={"source_id": "black cube", "relation": "right_of", "reference_ids": ["white cube"]},
+    )
+
+    result = execute_non_motion_skill(
+        step,
+        gripper_backend=None,
+        context=context,
+        perception_pipeline=pipeline,
+        point_cloud_builder=_GeometryPointCloudBuilder(),
+    )
+
+    assert result["success"] is True
+    assert result["output"]["target_pose"]["x"] == pytest.approx(0.48)
+    assert [item["status"] for item in result["output"]["geometry_updates"]] == ["UPDATED", "UPDATED"]
+    assert context["scene"].objects[0].metadata["footprint_dimensions_m"]["x"] == 0.10
+    assert context["scene"].objects[0].metadata["dimensions_m"]["z"] == 0.05
+
+
 def test_pick_object_after_unavailable_detection_is_blocked():
     context = {}
     detect_step = PlanStep(

@@ -15,6 +15,19 @@ class ObjectPointCloudBuilder:
         "min_depth_m": 0.05,
         "max_depth_m": 2.0,
         "max_points": 50000,
+        # Robust AABB bounds suppress isolated depth outliers at mask edges.
+        "extent_percentile_low": 2.0,
+        "extent_percentile_high": 98.0,
+        "table_plane_enabled": True,
+        "table_plane_margin_px": 24,
+        "table_plane_min_points": 250,
+        "table_plane_max_points": 12000,
+        "table_plane_ransac_iterations": 120,
+        "table_plane_inlier_threshold_m": 0.005,
+        "table_plane_min_inlier_ratio": 0.65,
+        "height_percentile": 90.0,
+        "min_height_m": 0.003,
+        "max_height_m": 0.25,
     }
 
     def __init__(self, config: dict | None = None):
@@ -29,6 +42,7 @@ class ObjectPointCloudBuilder:
         depth_frame: Any,
         camera_info: Any,
         frame: str | None = None,
+        point_transformer: Any | None = None,
     ) -> dict:
         metadata = self._value(scene_object, "metadata", {}) or {}
         mask_path = metadata.get("mask_path")
@@ -76,6 +90,24 @@ class ObjectPointCloudBuilder:
             points = np.column_stack((x, y, z))
             centroid = points.mean(axis=0)
             planar_axes = self._planar_principal_axes(points)
+            dimension_points = points
+            dimension_frame = frame or self._frame_id(camera_info)
+            if point_transformer is not None:
+                transformed = point_transformer.transform_points(points, dimension_frame)
+                if transformed is not None:
+                    dimension_points = np.asarray(transformed, dtype=float)
+                    dimension_frame = str(point_transformer.target_frame)
+            visible_extents = self._robust_extents(dimension_points, np)
+            height_estimation = self._estimate_tabletop_height(
+                depth_m=depth_m,
+                mask=mask,
+                fx=fx,
+                fy=fy,
+                cx=cx,
+                cy=cy,
+                depth_scale=1.0,
+                np_module=np,
+            )
 
             output_dir = Path(str(self.config["output_dir"]))
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -97,6 +129,27 @@ class ObjectPointCloudBuilder:
                 "z": float(centroid[2]),
             },
             "planar_principal_axes": planar_axes,
+            # This is a visible-surface AABB, not a full watertight object
+            # model.  In particular, a top-down RGB-D view cannot reliably
+            # observe object thickness.  Consumers use the measured footprint
+            # and retain a conservative height fallback unless a later table
+            # plane / multi-view estimator supplies a true height.
+            "visible_aabb_dimensions_m": visible_extents,
+            "footprint_dimensions_m": {
+                "x": visible_extents["x"],
+                "y": visible_extents["y"],
+            },
+            "dimensions_frame": dimension_frame,
+            "dimension_estimation": {
+                "method": "masked_point_cloud_robust_aabb",
+                "percentiles": [
+                    float(self.config["extent_percentile_low"]),
+                    float(self.config["extent_percentile_high"]),
+                ],
+                "visible_surface_only": True,
+                "height_reliable": bool(height_estimation.get("usable", False)),
+            },
+            "height_estimation": height_estimation,
         }
 
     @staticmethod
@@ -164,6 +217,148 @@ class ObjectPointCloudBuilder:
             return axes
         except Exception:
             return []
+
+    def _robust_extents(self, points, np_module) -> dict[str, float]:
+        """Return axis-aligned percentile extents for a masked point cloud."""
+        values = np_module.asarray(points, dtype=float)
+        if values.ndim != 2 or values.shape[1] != 3 or values.shape[0] == 0:
+            raise ValueError("Point cloud must have shape (N, 3) to estimate dimensions.")
+        low = float(self.config["extent_percentile_low"])
+        high = float(self.config["extent_percentile_high"])
+        if not 0.0 <= low < high <= 100.0:
+            raise ValueError("Extent percentiles must satisfy 0 <= low < high <= 100.")
+        lower, upper = np_module.percentile(values, [low, high], axis=0)
+        extents = np_module.maximum(upper - lower, 0.0)
+        return {
+            "x": float(extents[0]),
+            "y": float(extents[1]),
+            "z": float(extents[2]),
+        }
+
+    def _estimate_tabletop_height(
+        self,
+        *,
+        depth_m,
+        mask,
+        fx: float,
+        fy: float,
+        cx: float,
+        cy: float,
+        depth_scale: float,
+        np_module,
+    ) -> dict[str, Any]:
+        """Estimate height above a locally fitted tabletop plane.
+
+        A SAM3 mask sees only an object's visible surface, so its depth range
+        alone is not its thickness.  Background points in a padded rectangle
+        around the mask provide a local table plane; RANSAC rejects clutter
+        and the object height is the high percentile of object-to-plane
+        distances.  This is deliberately conservative and returns a quality
+        record instead of fabricating a height when the table is not visible.
+        """
+        unavailable = {
+            "usable": False,
+            "height_m": None,
+            "confidence": 0.0,
+            "plane_inlier_ratio": 0.0,
+            "height_std_m": None,
+            "method": "tabletop_plane_ransac",
+        }
+        if not bool(self.config.get("table_plane_enabled", True)):
+            return {**unavailable, "reason": "disabled"}
+        rows, cols = np_module.nonzero(mask)
+        if rows.size == 0:
+            return {**unavailable, "reason": "empty_mask"}
+        height, width = mask.shape
+        margin = max(1, int(self.config["table_plane_margin_px"]))
+        row_min, row_max = max(0, int(rows.min()) - margin), min(height, int(rows.max()) + margin + 1)
+        col_min, col_max = max(0, int(cols.min()) - margin), min(width, int(cols.max()) + margin + 1)
+        neighborhood = np_module.zeros_like(mask, dtype=bool)
+        neighborhood[row_min:row_max, col_min:col_max] = True
+        valid_depth = np_module.isfinite(depth_m) & (depth_m >= float(self.config["min_depth_m"])) & (
+            depth_m <= float(self.config["max_depth_m"])
+        )
+        table_rows, table_cols = np_module.nonzero(neighborhood & ~mask & valid_depth)
+        min_points = int(self.config["table_plane_min_points"])
+        if table_rows.size < min_points:
+            return {**unavailable, "reason": "insufficient_table_points", "table_point_count": int(table_rows.size)}
+        max_points = int(self.config["table_plane_max_points"])
+        if table_rows.size > max_points:
+            indices = np_module.linspace(0, table_rows.size - 1, max_points, dtype=int)
+            table_rows, table_cols = table_rows[indices], table_cols[indices]
+        table_points = self._backproject(table_rows, table_cols, depth_m, fx, fy, cx, cy, np_module)
+        plane = self._fit_plane_ransac(table_points, np_module)
+        if plane is None:
+            return {**unavailable, "reason": "table_plane_fit_failed", "table_point_count": int(table_points.shape[0])}
+        normal, offset, inliers = plane
+        inlier_ratio = float(inliers.mean())
+        object_rows, object_cols = np_module.nonzero(mask & valid_depth)
+        object_points = self._backproject(object_rows, object_cols, depth_m, fx, fy, cx, cy, np_module)
+        distances = np_module.abs(object_points @ normal + offset)
+        if distances.size == 0:
+            return {**unavailable, "reason": "no_valid_object_points"}
+        height_m = float(np_module.percentile(distances, float(self.config["height_percentile"])))
+        upper = distances[distances >= np_module.percentile(distances, 75.0)]
+        height_std_m = float(np_module.std(upper)) if upper.size else None
+        min_height, max_height = float(self.config["min_height_m"]), float(self.config["max_height_m"])
+        usable = (
+            inlier_ratio >= float(self.config["table_plane_min_inlier_ratio"])
+            and min_height <= height_m <= max_height
+        )
+        confidence = max(0.0, min(1.0, inlier_ratio * min(1.0, table_points.shape[0] / 1000.0)))
+        return {
+            "usable": bool(usable),
+            "height_m": height_m,
+            "confidence": confidence,
+            "plane_inlier_ratio": inlier_ratio,
+            "height_std_m": height_std_m,
+            "method": "tabletop_plane_ransac",
+            "table_point_count": int(table_points.shape[0]),
+            "object_point_count": int(object_points.shape[0]),
+            "reason": None if usable else "height_or_plane_quality_out_of_range",
+        }
+
+    @staticmethod
+    def _backproject(rows, cols, depth_m, fx, fy, cx, cy, np_module):
+        z = depth_m[rows, cols]
+        x = (cols - cx) * z / fx
+        y = (rows - cy) * z / fy
+        return np_module.column_stack((x, y, z))
+
+    def _fit_plane_ransac(self, points, np_module):
+        if points.shape[0] < 3:
+            return None
+        rng = np_module.random.default_rng(0)
+        threshold = float(self.config["table_plane_inlier_threshold_m"])
+        best_inliers = None
+        for _ in range(int(self.config["table_plane_ransac_iterations"])):
+            sample = points[rng.choice(points.shape[0], size=3, replace=False)]
+            normal = np_module.cross(sample[1] - sample[0], sample[2] - sample[0])
+            norm = float(np_module.linalg.norm(normal))
+            if norm <= 1e-9:
+                continue
+            normal = normal / norm
+            offset = -float(normal @ sample[0])
+            inliers = np_module.abs(points @ normal + offset) <= threshold
+            if best_inliers is None or int(inliers.sum()) > int(best_inliers.sum()):
+                best_inliers = inliers
+        if best_inliers is None or int(best_inliers.sum()) < 3:
+            return None
+        inlier_points = points[best_inliers]
+        center = inlier_points.mean(axis=0)
+        _singular_values, _vectors = None, None
+        try:
+            _u, _singular_values, vectors = np_module.linalg.svd(inlier_points - center, full_matrices=False)
+            normal = vectors[-1]
+        except Exception:
+            return None
+        norm = float(np_module.linalg.norm(normal))
+        if norm <= 1e-9:
+            return None
+        normal = normal / norm
+        offset = -float(normal @ center)
+        refined_inliers = np_module.abs(points @ normal + offset) <= threshold
+        return normal, offset, refined_inliers
 
     @staticmethod
     def _value(value: Any, name: str, default: Any = None) -> Any:
