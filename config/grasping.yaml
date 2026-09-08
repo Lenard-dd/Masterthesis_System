@@ -1,4 +1,13 @@
 grasping:
+  # End-effector clearance above the calculated object placement centre.
+  # This is intentionally below the restricted real-arm approach limit.
+  place_motion:
+    approach_height_m: 0.05
+    # Object-centre to tool0 offset is preserved at placement.  With the
+    # Robotiq/tool0 frame used here, valid reviewed grasps can be about 0.23 m
+    # from an object's localized centre; keep a bounded allowance instead of
+    # rejecting them before MoveIt can preview the place path.
+    max_grasp_offset_m: 0.30
   point_cloud:
     output_dir: data/grasping/point_clouds
     depth_scale: 0.001

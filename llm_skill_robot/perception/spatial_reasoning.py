@@ -99,6 +99,7 @@ class RelativePlacePosePlanner:
             "status": "SUCCESS",
             "message": f"Computed a plan-only {normalized_relation} placement pose.",
             "source_object_id": source.object_id,
+            "source_label": source.label,
             "reference_object_ids": [reference.object_id for reference in references],
             "relation": normalized_relation,
             "source_pose": source_pose.model_dump(),

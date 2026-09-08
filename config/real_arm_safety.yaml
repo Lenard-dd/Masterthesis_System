@@ -25,6 +25,9 @@ real_arm_safety:
     - move_to_pregrasp
     - approach_grasp
     - retreat_grasp
+    - move_to_place_approach
+    - approach_place
+    - retreat_place
     - lift_object
     - move_to_safe_home
     - move_to_observe

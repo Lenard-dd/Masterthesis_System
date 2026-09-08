@@ -409,3 +409,39 @@ def test_build_object_point_cloud_is_dispatched_after_detection():
     assert result["success"] is True
     assert result["output"]["point_cloud_path"] == "/tmp/cube_1.ply"
     assert context["point_cloud"]["status"] == "SUCCESS"
+
+
+def test_point_cloud_reuses_mask_metadata_from_latest_multi_object_scene():
+    pipeline = PerceptionPipeline()
+    pipeline.backend = _ReadyRGBDCamera()
+    pipeline.latest_scene = SceneModel.model_validate({
+        "objects": [{
+            "object_id": "cube_1", "label": "red cube", "confidence": 0.9,
+            "metadata": {"mask_path": "/tmp/cube_1_mask.png"},
+        }],
+    })
+    context = {
+        # The supervised-pick DAG deliberately retains identity only here.
+        "selected_object": {"object_id": "cube_1"},
+        "resolved_object_id": "cube_1",
+    }
+    received = {}
+
+    class Builder(_PointCloudBuilder):
+        def build(self, scene_object, *args, **kwargs):
+            received["metadata"] = scene_object.metadata
+            return super().build(scene_object.model_dump(), *args, **kwargs)
+
+    result = execute_non_motion_skill(
+        PlanStep(
+            step_id="3", skill_id="build_object_point_cloud",
+            description="Build point cloud", parameters={"object_id": "cube_1"},
+        ),
+        gripper_backend=None,
+        context=context,
+        perception_pipeline=pipeline,
+        point_cloud_builder=Builder(),
+    )
+
+    assert result["success"] is True
+    assert received["metadata"]["mask_path"] == "/tmp/cube_1_mask.png"

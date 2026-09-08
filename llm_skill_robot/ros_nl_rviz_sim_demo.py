@@ -314,11 +314,19 @@ def execute_non_motion_skill(
         perception_pipeline = perception_pipeline or PerceptionPipeline()
         point_cloud_builder = point_cloud_builder or ObjectPointCloudBuilder()
         selected = _resolve_scene_object(step.parameters.get("object_id"), context)
-        if selected is None:
-            selected = _resolve_scene_object(
-                step.parameters.get("object_id"),
-                {"scene": perception_pipeline.get_latest_scene()},
-            )
+        # A supervised pick that reuses a prior multi-object localization
+        # intentionally carries only object_id through its small task context.
+        # The full latest scene retains the SAM3 mask path required for point
+        # cloud construction. Prefer that rich scene object when the context
+        # entry is merely an identity stub; do not call SAM3 again.
+        scene_selected = _resolve_scene_object(
+            step.parameters.get("object_id"),
+            {"scene": perception_pipeline.get_latest_scene()},
+        )
+        if selected is None or (
+            scene_selected is not None and not _scene_object_has_mask_path(selected)
+        ):
+            selected = scene_selected
         if selected is None:
             result = {
                 "success": False,
@@ -491,6 +499,12 @@ def execute_non_motion_skill(
 
 def _object_value(value: Any, name: str, default: Any = None) -> Any:
     return value.get(name, default) if isinstance(value, dict) else getattr(value, name, default)
+
+
+def _scene_object_has_mask_path(value: Any) -> bool:
+    """Whether an object carries the SAM3 artifact required for a cloud."""
+    metadata = _object_value(value, "metadata", {}) or {}
+    return isinstance(metadata, dict) and bool(str(metadata.get("mask_path", "")).strip())
 
 
 def _resolve_scene_object(object_id: Any, context: Dict[str, Any]) -> Any | None:

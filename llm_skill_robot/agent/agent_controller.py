@@ -622,3 +622,4 @@ class AgentController:
                 "arguments": normalized.pop("arguments"),
             }
         return normalized
+                        
