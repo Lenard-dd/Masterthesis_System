@@ -45,6 +45,6 @@ tabletop_safety:
 
   # Prefer near-normal tabletop approaches.  The workcell does not require
   # pronounced side grasps for its intended objects, so reject candidates
-  # whose pregrasp-to-grasp approach tilts more than 20 degrees from the
+  # whose pregrasp-to-grasp approach tilts more than 25 degrees from the
   # calibrated table normal.
-  max_approach_tilt_deg: 20.0
+  max_approach_tilt_deg: 25.0
