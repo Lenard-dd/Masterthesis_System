@@ -92,7 +92,8 @@ grasping:
       grasp_preferences:
         enabled: true
         prefer_top_down: true
-        max_tilt_deg: 30.0
+        # Keep candidate ranking aligned with the hard tabletop safety gate.
+        max_tilt_deg: 20.0
         top_down_weight: 2.0
         prefer_face_aligned_yaw: true
         max_face_yaw_deviation_deg: 25.0

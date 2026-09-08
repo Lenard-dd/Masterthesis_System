@@ -43,5 +43,8 @@ tabletop_safety:
   # collision_margin_m and clearance.grasp_m already provide 13 mm together.
   close_sweep_compensation_m: 0.000
 
-  # Keep the original near-normal tabletop approach restriction.
-  max_approach_tilt_deg: 30.0
+  # Prefer near-normal tabletop approaches.  The workcell does not require
+  # pronounced side grasps for its intended objects, so reject candidates
+  # whose pregrasp-to-grasp approach tilts more than 20 degrees from the
+  # calibrated table normal.
+  max_approach_tilt_deg: 20.0
