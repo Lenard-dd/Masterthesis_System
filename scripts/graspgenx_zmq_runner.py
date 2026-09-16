@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--strategy", choices=["diffusion", "sparse"], default="diffusion")
     parser.add_argument("--sparse-quota", type=int, default=24)
     parser.add_argument("--moe-num-yaws", type=int, default=36)
-    parser.add_argument("--moe-z-offsets-cm", default="-2,0")
+    parser.add_argument("--moe-z-offsets-cm", default="0")
     parser.add_argument(
         "--default-gripper-width-m",
         type=float,

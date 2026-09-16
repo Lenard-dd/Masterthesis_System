@@ -59,7 +59,7 @@ def main():
                 num_grasps=num_grasps,
                 topk_num_grasps=-1,
                 num_yaws=int(request.get("moe_num_yaws", 36)),
-                z_offsets_cm=tuple(float(x) for x in request.get("moe_z_offsets_cm", [-2.0, 0.0])),
+                z_offsets_cm=tuple(float(x) for x in request.get("moe_z_offsets_cm", [0.0])),
                 obb_density="sparse",
             )
             obb_order = np.argsort(result["scores_obb"])[::-1][:sparse_quota]

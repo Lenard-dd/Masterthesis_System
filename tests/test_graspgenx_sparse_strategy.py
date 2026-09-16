@@ -144,7 +144,7 @@ def test_runner_round_trip_parses_negative_offsets_and_handles_legacy_server(
     assert output["metadata"]["strategy_used"] == ("sparse" if supported else "diffusion")
     assert output["metadata"]["sparse_fallback"] is (not supported)
     if supported:
-        assert calls[0]["moe_z_offsets_cm"] == [-2.0, 0.0]
+        assert calls[0]["moe_z_offsets_cm"] == [0.0]
         assert output["candidates"][0]["metadata"]["generation_branch"] == "obb_sparse"
     else:
         assert calls[0]["action"] == "infer"

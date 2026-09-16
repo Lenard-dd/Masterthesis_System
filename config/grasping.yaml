@@ -43,7 +43,10 @@ grasping:
     strategy: sparse
     sparse_quota: 24
     moe_num_yaws: 36
-    moe_z_offsets_cm: "-2,0"
+    # Negative OBB offsets can place a grasp inside the table for thin parts.
+    # GraspMoE ranks all yaw/height combinations together, so the old -2,0
+    # setting could fill the whole sparse quota with the unsafe -2 cm layer.
+    moe_z_offsets_cm: "0"
     num_grasps: 200
     grasp_threshold: -1.0
     topk_num_grasps: 100

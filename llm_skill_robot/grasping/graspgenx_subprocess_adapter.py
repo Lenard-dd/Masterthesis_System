@@ -31,7 +31,7 @@ class GraspGenXSubprocessAdapter:
         "strategy": "diffusion",
         "sparse_quota": 24,
         "moe_num_yaws": 36,
-        "moe_z_offsets_cm": "-2,0",
+        "moe_z_offsets_cm": "0",
     }
 
     def __init__(self, config: dict | None = None):
