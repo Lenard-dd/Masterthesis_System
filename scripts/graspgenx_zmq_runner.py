@@ -37,6 +37,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grasp-threshold", type=float, default=-1.0)
     parser.add_argument("--topk-num-grasps", type=int, default=100)
     parser.add_argument("--timeout-ms", type=int, default=60000)
+    parser.add_argument("--strategy", choices=["diffusion", "sparse"], default="diffusion")
+    parser.add_argument("--sparse-quota", type=int, default=24)
+    parser.add_argument("--moe-num-yaws", type=int, default=36)
+    parser.add_argument("--moe-z-offsets-cm", default="-2,0")
     parser.add_argument(
         "--default-gripper-width-m",
         type=float,
@@ -85,13 +89,32 @@ def main() -> int:
                 host=args.host, port=args.port, timeout_ms=args.timeout_ms
             ) as client:
                 metadata = client.server_metadata
-                grasps, confidences = client.infer(
-                    point_cloud,
-                    gripper_name=args.gripper_name,
-                    num_grasps=args.num_grasps,
-                    grasp_threshold=args.grasp_threshold,
-                    topk_num_grasps=args.topk_num_grasps,
-                )
+                strategy_used = "diffusion"
+                sources = None
+                if args.strategy == "sparse" and "infer_sparse" in metadata.get("supported_actions", []):
+                    response = client._request({
+                        "action": "infer_sparse",
+                        "point_cloud": point_cloud,
+                        "gripper_name": args.gripper_name,
+                        "num_grasps": args.num_grasps,
+                        "grasp_threshold": args.grasp_threshold,
+                        "topk_num_grasps": args.topk_num_grasps,
+                        "sparse_quota": args.sparse_quota,
+                        "moe_num_yaws": args.moe_num_yaws,
+                        "moe_z_offsets_cm": [float(x) for x in args.moe_z_offsets_cm.split(",")],
+                    })
+                    grasps = response["grasps"]
+                    confidences = response["confidences"]
+                    sources = response["sources"]
+                    strategy_used = "sparse"
+                else:
+                    grasps, confidences = client.infer(
+                        point_cloud,
+                        gripper_name=args.gripper_name,
+                        num_grasps=args.num_grasps,
+                        grasp_threshold=args.grasp_threshold,
+                        topk_num_grasps=args.topk_num_grasps,
+                    )
     except Exception as exc:
         print(
             json.dumps(
@@ -113,6 +136,7 @@ def main() -> int:
         estimate_gripper_width=args.estimate_gripper_width,
         width_axis_index=args.width_axis_index,
         width_clearance_m=args.width_clearance_m,
+        sources=sources,
     )
     status = "SUCCESS" if candidates else "NOT_FOUND"
     print(
@@ -121,13 +145,20 @@ def main() -> int:
                 "status": status,
                 "message": (
                     f"Received {len(candidates)} candidate(s) from GraspGenX "
-                    f"server {args.host}:{args.port} for {args.gripper_name}."
+                    f"server {args.host}:{args.port} for {args.gripper_name}; "
+                    f"strategy={strategy_used}"
+                    + (" (sparse unavailable on this server; diffusion fallback)"
+                       if args.strategy == "sparse" and strategy_used != "sparse" else "")
+                    + "."
                 ),
                 "metadata": {
                     "server": metadata,
                     "num_input_points": int(point_cloud.shape[0]),
                     "gripper_name": args.gripper_name,
                     "point_cloud_preprocessing": point_cloud_metadata,
+                    "strategy_requested": args.strategy,
+                    "strategy_used": strategy_used,
+                    "sparse_fallback": args.strategy == "sparse" and strategy_used != "sparse",
                 },
                 "candidates": candidates,
             }
@@ -215,6 +246,7 @@ def make_candidates(
     estimate_gripper_width: bool = True,
     width_axis_index: int = 1,
     width_clearance_m: float = 0.01,
+    sources: Any | None = None,
 ) -> list[dict]:
     grasp_array = np.asarray(grasps, dtype=np.float32)
     score_array = np.asarray(confidences, dtype=np.float32).reshape(-1)
@@ -222,6 +254,8 @@ def make_candidates(
     if grasp_array.ndim != 3 or grasp_array.shape[1:] != (4, 4):
         raise ValueError(f"Expected grasps shape (N, 4, 4), got {grasp_array.shape}")
     count = min(int(grasp_array.shape[0]), int(score_array.shape[0]))
+    if sources is not None and len(sources) != count:
+        raise ValueError("GraspGenX source count does not match grasp count")
     candidates = []
     for index in range(count):
         matrix = grasp_array[index].astype(float).tolist()
@@ -238,7 +272,11 @@ def make_candidates(
             "pose": matrix_to_pose(matrix, frame="object_point_cloud"),
             "approach_vector": approach_vector,
             "closing_axis": closing_axis,
-            "metadata": {"source": "graspgenx_zmq", "gripper_name": gripper_name},
+            "metadata": {
+                "source": "graspgenx_zmq",
+                "gripper_name": gripper_name,
+                "generation_branch": str(sources[index]) if sources is not None else "diffusion",
+            },
         }
         if default_gripper_width_m is not None:
             candidate["gripper_width_m"] = float(default_gripper_width_m)

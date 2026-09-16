@@ -25,7 +25,7 @@ from llm_skill_robot.perception.perception_factory import (
 )
 from llm_skill_robot.perception.perception_pipeline import PerceptionPipeline
 from llm_skill_robot.perception.object_point_cloud_builder import ObjectPointCloudBuilder
-from llm_skill_robot.grasping.graspgenx_grasp_planner import GraspGenXGraspPlanner
+from llm_skill_robot.grasping.graspgenx_grasp_planner import GraspGenXGraspPlanner, generate_candidates_with_context
 from llm_skill_robot.grasping.graspgenx_subprocess_adapter import GraspGenXSubprocessAdapter
 from llm_skill_robot.grasping.grasp_verifier import GraspVerifier
 from llm_skill_robot.robot.robotiq_2f140_sim_backend import Robotiq2F140SimBackend
@@ -404,7 +404,10 @@ def execute_non_motion_skill(
                         config.get("graspgenx_subprocess", {})
                     )
                 )
-            result = grasp_planner.generate_candidates(str(point_cloud_path))
+            result = generate_candidates_with_context(
+                grasp_planner, point_cloud,
+                getattr(getattr(perception_pipeline, "backend", None), "pose_transformer", None),
+            )
         candidates = result.get("candidates", []) if isinstance(result, dict) else []
         if candidates:
             context["grasp_candidates"] = candidates

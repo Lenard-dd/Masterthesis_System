@@ -37,6 +37,13 @@ grasping:
     server_host: localhost
     server_port: 5556
     gripper_name: robotiq_2f_140
+    # Prefer GraspMoE's top-down OBB sparse branch for tabletop objects.
+    # The project server extension is needed; the upstream server keeps the
+    # diffusion fallback, with the actual strategy recorded in metadata.
+    strategy: sparse
+    sparse_quota: 24
+    moe_num_yaws: 36
+    moe_z_offsets_cm: "-2,0"
     num_grasps: 200
     grasp_threshold: -1.0
     topk_num_grasps: 100
@@ -83,7 +90,9 @@ grasping:
     # candidates that create complex RViz paths or fail validation.
     candidate_screening:
       enabled: true
+      # Symmetry normalization removes equivalent yaw pairs before this cap.
       max_candidates: 30
+      sparse_screen_quota: 12
       variants: [full_pose, relaxed_orientation, position_only]
       position_tolerance_m: 0.01
       full_orientation_tolerance_rad: 0.05
@@ -91,6 +100,14 @@ grasping:
       allow_position_only_fallback: true
       grasp_preferences:
         enabled: true
+        # A two-finger grasp is physically unchanged after a 180-degree turn
+        # around its approach axis. Choose the representation closest to the
+        # current wrist before MoveIt, and try the opposite only as fallback.
+        parallel_jaw_symmetry_enabled: true
+        # Plan the 180-degree equivalent only when the initially selected
+        # trajectory would rotate wrist_3 by at least 120 degrees.
+        symmetry_replan_wrist_threshold_rad: 2.09439510239
+        wrist_rotation_weight: 2.0
         prefer_top_down: true
         # Keep candidate ranking aligned with the hard tabletop safety gate.
         max_tilt_deg: 25.0
@@ -101,11 +118,11 @@ grasping:
         prefer_current_gripper_yaw: true
         current_yaw_weight: 3.0
         max_preferred_yaw_change_deg: 90.0
-        # Optional TF source for the current real gripper closing direction.
-        # Set current_gripper_frame to the finger frame whose blue/Z axis is
-        # the Robotiq closing axis. Leave empty to skip TF-based yaw preference.
-        current_gripper_frame: "left_inner_finger"
-        current_gripper_axis: [0.0, 0.0, 1.0]
+        # Fixed Robotiq base-frame Y is the jaw closing direction. Using the
+        # fixed base avoids finger-joint motion changing the reference axis.
+        current_gripper_frame: "robotiq_140_base_link"
+        current_gripper_axis: [0.0, 1.0, 0.0]
+        current_gripper_tf_timeout_sec: 1.0
     # GraspGenX reports a grasp / Robotiq gripper frame. MoveIt plans for the
     # UR5 end-effector frame configured in config/ur5.yaml, normally tool0.
     #

@@ -9,8 +9,12 @@ import time
 from typing import Any
 
 from llm_skill_robot.core.audit_logger import AuditLogger
-from llm_skill_robot.grasping.graspgenx_grasp_planner import GraspGenXGraspPlanner
+from llm_skill_robot.grasping.graspgenx_grasp_planner import GraspGenXGraspPlanner, generate_candidates_with_context, screen_candidate_order
 from llm_skill_robot.grasping.graspgenx_subprocess_adapter import GraspGenXSubprocessAdapter
+from llm_skill_robot.grasping.parallel_jaw_symmetry import (
+    canonicalize_sparse_parallel_jaw_candidates,
+    current_closing_axis,
+)
 from llm_skill_robot.perception.object_point_cloud_builder import ObjectPointCloudBuilder
 from llm_skill_robot.perception.perception_factory import create_perception_pipeline
 from llm_skill_robot.perception.tf_pose_transformer import TFPoseTransformer
@@ -119,7 +123,7 @@ class PregraspRealDemoController:
                 f"Point-cloud generation failed: {point_cloud.get('message', 'unavailable')}"
             )
 
-        generation = self.grasp_planner.generate_candidates(point_cloud["point_cloud_path"])
+        generation = generate_candidates_with_context(self.grasp_planner, point_cloud, self.transformer)
         candidates = generation.get("candidates", [])
         if not candidates:
             return self._blocked(
@@ -208,12 +212,29 @@ class PregraspRealDemoController:
             if _candidate_value(candidate, "valid", True) is not False
         ]
         if not preserve_candidate_order:
-            valid_candidates = sorted(
-                valid_candidates,
-                key=lambda candidate: float(_candidate_value(candidate, "score", 0.0) or 0.0),
-                reverse=True,
+            preference_config = screening_config.get("grasp_preferences", {}) or {}
+            symmetry_fallbacks = []
+            if preference_config.get("parallel_jaw_symmetry_enabled", True):
+                valid_candidates, symmetry_fallbacks = canonicalize_sparse_parallel_jaw_candidates(
+                    valid_candidates,
+                    current_closing_axis(preference_config, self.transformer),
+                )
+            valid_candidates = screen_candidate_order(
+                valid_candidates, max_candidates,
+                int(screening_config.get("sparse_screen_quota", 12)),
             )
-        valid_candidates = valid_candidates[:max_candidates]
+            selected_ids = {
+                str(_candidate_value(candidate, "candidate_id", ""))
+                for candidate in valid_candidates
+            }
+            valid_candidates += [
+                candidate for candidate in symmetry_fallbacks
+                if str((_candidate_value(candidate, "metadata", {}) or {}).get(
+                    "parallel_jaw_symmetry_base_candidate_id", ""
+                )) in selected_ids
+            ]
+        else:
+            valid_candidates = valid_candidates[:max_candidates]
 
         attempts: list[dict[str, Any]] = []
         for candidate_index, candidate in enumerate(valid_candidates, start=1):
@@ -260,7 +281,9 @@ class PregraspRealDemoController:
                 )
                 continue
 
-            for variant in variants:
+            metadata = _candidate_value(candidate, "metadata", {}) or {}
+            candidate_variants = ["full_pose"] if metadata.get("generation_branch") == "obb_sparse" else variants
+            for variant in candidate_variants:
                 try:
                     plan = self._plan_pregrasp(
                         pregrasp_pose,

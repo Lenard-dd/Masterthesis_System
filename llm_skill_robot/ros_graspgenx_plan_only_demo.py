@@ -10,8 +10,12 @@ from typing import Any, Callable
 
 from llm_skill_robot.core.trajectory_validator import TrajectoryValidator
 from llm_skill_robot.core.trajectory_visualizer import TrajectoryVisualizer
-from llm_skill_robot.grasping.graspgenx_grasp_planner import GraspGenXGraspPlanner
+from llm_skill_robot.grasping.graspgenx_grasp_planner import GraspGenXGraspPlanner, generate_candidates_with_context, screen_candidate_order
 from llm_skill_robot.grasping.graspgenx_subprocess_adapter import GraspGenXSubprocessAdapter
+from llm_skill_robot.grasping.parallel_jaw_symmetry import (
+    canonicalize_sparse_parallel_jaw_candidates,
+    current_closing_axis,
+)
 from llm_skill_robot.perception.object_point_cloud_builder import ObjectPointCloudBuilder
 from llm_skill_robot.perception.perception_factory import create_perception_pipeline
 from llm_skill_robot.perception.tf_pose_transformer import TFPoseTransformer
@@ -431,11 +435,27 @@ def screen_grasp_candidates_for_plan_only(
         for candidate in candidates
         if _candidate_value(candidate, "valid", True) is not False
     ]
-    valid_candidates = sorted(
-        valid_candidates,
-        key=lambda candidate: float(_candidate_value(candidate, "score", 0.0) or 0.0),
-        reverse=True,
-    )[:max_candidates]
+    symmetry_fallbacks = []
+    symmetry_config = screening_config.get("grasp_preferences", {}) or {}
+    if symmetry_config.get("parallel_jaw_symmetry_enabled", True):
+        valid_candidates, symmetry_fallbacks = canonicalize_sparse_parallel_jaw_candidates(
+            valid_candidates,
+            current_closing_axis(symmetry_config, transformer),
+        )
+    valid_candidates = screen_candidate_order(
+        valid_candidates, max_candidates,
+        int(screening_config.get("sparse_screen_quota", 12)),
+    )
+    selected_ids = {
+        str(_candidate_value(candidate, "candidate_id", ""))
+        for candidate in valid_candidates
+    }
+    symmetry_fallbacks = [
+        candidate for candidate in symmetry_fallbacks
+        if str((_candidate_value(candidate, "metadata", {}) or {}).get(
+            "parallel_jaw_symmetry_base_candidate_id", ""
+        )) in selected_ids
+    ]
 
     attempts = []
     accepted_strict = []
@@ -500,7 +520,9 @@ def screen_grasp_candidates_for_plan_only(
             )
             continue
 
-        for variant in variants:
+        metadata = _candidate_value(candidate, "metadata", {}) or {}
+        candidate_variants = ["full_pose"] if metadata.get("generation_branch") == "obb_sparse" else variants
+        for variant in candidate_variants:
             kwargs = {
                 **base_plan_kwargs,
                 **planning_variant_kwargs(variant, screening_config),
@@ -554,6 +576,9 @@ def screen_grasp_candidates_for_plan_only(
                 "failed_stage": failed_stage,
                 "points": int(summary.get("num_trajectory_points") or 0),
                 "max_joint_delta_rad": summary.get("max_joint_delta_rad"),
+                "total_joint_delta_rad": summary.get("total_joint_delta_rad"),
+                "wrist_3_joint_delta_rad": summary.get("wrist_3_joint_delta_rad"),
+                "joint_deltas_rad": summary.get("joint_deltas_rad", {}),
             }
             attempts.append(attempt)
             if attempt["accepted"]:
@@ -562,19 +587,83 @@ def screen_grasp_candidates_for_plan_only(
                 else:
                     accepted_strict.append(attempt)
 
-    selected_attempts = accepted_strict or accepted_position_only
-    if not selected_attempts:
-        return {"selected": None, "poses": None, "variant": None, "attempts": attempts}
-
     def ranking_key(attempt: dict) -> tuple:
         max_delta = attempt.get("max_joint_delta_rad")
+        total_delta = attempt.get("total_joint_delta_rad")
+        wrist_delta = attempt.get("wrist_3_joint_delta_rad")
+        wrist_weight = max(0.0, float(screening_config.get("wrist_rotation_weight", 2.0)))
+        if total_delta is None:
+            motion_cost = float(max_delta) if max_delta is not None else float("inf")
+        else:
+            motion_cost = float(total_delta) + wrist_weight * float(wrist_delta or 0.0)
         return (
+            motion_cost,
             float(max_delta) if max_delta is not None else float("inf"),
             int(attempt.get("points") or 999999),
             -float(attempt.get("score") or 0.0),
         )
 
+    selected_attempts = accepted_strict or accepted_position_only
+    if not selected_attempts:
+        if symmetry_fallbacks:
+            fallback_config = dict(preview_config)
+            fallback_screening = dict(screening_config)
+            fallback_preferences = dict(symmetry_config)
+            fallback_preferences["parallel_jaw_symmetry_enabled"] = False
+            fallback_screening["grasp_preferences"] = fallback_preferences
+            fallback_screening["max_candidates"] = min(max_candidates, len(symmetry_fallbacks))
+            fallback_config["candidate_screening"] = fallback_screening
+            fallback_result = screen_grasp_candidates_for_plan_only(
+                symmetry_fallbacks, point_cloud, fallback_config, target_frame,
+                transformer, backend, trajectory_validator, velocity_scale,
+                acceleration_scale, pose_adjuster, pose_validator,
+            )
+            fallback_result["attempts"] = attempts + fallback_result.get("attempts", [])
+            return fallback_result
+        return {"selected": None, "poses": None, "variant": None, "attempts": attempts}
+
     selected_attempt = sorted(selected_attempts, key=ranking_key)[0]
+    selected_metadata = _candidate_value(selected_attempt["candidate"], "metadata", {}) or {}
+    wrist_delta = selected_attempt.get("wrist_3_joint_delta_rad")
+    wrist_threshold = float(
+        symmetry_config.get("symmetry_replan_wrist_threshold_rad", 2.09439510239)
+    )
+    if (
+        symmetry_fallbacks
+        and selected_metadata.get("parallel_jaw_symmetry_role") == "preferred"
+        and wrist_delta is not None
+        and float(wrist_delta) >= wrist_threshold
+    ):
+        selected_base_id = str(
+            selected_metadata.get("parallel_jaw_symmetry_base_candidate_id")
+            or selected_attempt.get("candidate_id", "")
+        )
+        matching_fallback = next(
+            (
+                candidate for candidate in symmetry_fallbacks
+                if str((_candidate_value(candidate, "metadata", {}) or {}).get(
+                    "parallel_jaw_symmetry_base_candidate_id", ""
+                )) == selected_base_id
+            ),
+            None,
+        )
+        if matching_fallback is not None:
+            fallback_config = dict(preview_config)
+            fallback_screening = dict(screening_config)
+            fallback_preferences = dict(symmetry_config)
+            fallback_preferences["parallel_jaw_symmetry_enabled"] = False
+            fallback_screening["grasp_preferences"] = fallback_preferences
+            fallback_screening["max_candidates"] = 1
+            fallback_config["candidate_screening"] = fallback_screening
+            fallback_result = screen_grasp_candidates_for_plan_only(
+                [matching_fallback], point_cloud, fallback_config, target_frame,
+                transformer, backend, trajectory_validator, velocity_scale,
+                acceleration_scale, pose_adjuster, pose_validator,
+            )
+            attempts += fallback_result.get("attempts", [])
+            fallback_attempt = fallback_result.get("attempt")
+            if fallback_attempt is not None and ranking_key(fallback_attempt) < ranking_key(selected_attempt):
+                selected_attempt = fallback_attempt
     return {
         "selected": selected_attempt["candidate"],
         "poses": selected_attempt["poses"],
@@ -591,6 +680,9 @@ def _sequence_screening_summary(summaries: list[dict]) -> dict:
             "success": False,
             "num_trajectory_points": 0,
             "max_joint_delta_rad": None,
+            "total_joint_delta_rad": None,
+            "wrist_3_joint_delta_rad": None,
+            "joint_deltas_rad": {},
             "trajectory_preview": {},
         }
     max_delta_values = [
@@ -598,6 +690,23 @@ def _sequence_screening_summary(summaries: list[dict]) -> dict:
         for summary in summaries
         if summary.get("max_joint_delta_rad") is not None
     ]
+    joint_deltas: dict[str, float] = {}
+    joint_abs_deltas: dict[str, float] = {}
+    total_joint_delta = 0.0
+    found_joint_data = False
+    for summary in summaries:
+        preview = summary.get("trajectory_preview", {}) or {}
+        first = preview.get("first_point_positions") or []
+        last = preview.get("last_point_positions") or []
+        names = summary.get("joint_names") or []
+        count = min(len(first), len(last), len(names))
+        for index in range(count):
+            delta = float(last[index]) - float(first[index])
+            name = str(names[index])
+            joint_deltas[name] = joint_deltas.get(name, 0.0) + delta
+            joint_abs_deltas[name] = joint_abs_deltas.get(name, 0.0) + abs(delta)
+            total_joint_delta += abs(delta)
+            found_joint_data = True
     return {
         "success": all(summary.get("success", False) for summary in summaries),
         "num_trajectory_points": sum(
@@ -605,6 +714,12 @@ def _sequence_screening_summary(summaries: list[dict]) -> dict:
             for summary in summaries
         ),
         "max_joint_delta_rad": max(max_delta_values) if max_delta_values else None,
+        "total_joint_delta_rad": total_joint_delta if found_joint_data else None,
+        "wrist_3_joint_delta_rad": (
+            joint_abs_deltas["wrist_3_joint"]
+            if "wrist_3_joint" in joint_abs_deltas else None
+        ),
+        "joint_deltas_rad": joint_deltas,
         "trajectory_preview": {},
     }
 
@@ -1214,7 +1329,11 @@ def main() -> None:
             if not confirmation_is_yes(review_server):
                 print("GraspGenX generation not approved. Stopped safely.")
                 return
-        generation = planner.generate_candidates(point_cloud["point_cloud_path"])
+        target_frame = perception_config.get("perception", {}).get("target_frame", "base_link")
+        transformer = getattr(camera_backend, "pose_transformer", None)
+        if target_frame and (transformer is None or getattr(transformer, "target_frame", None) != target_frame):
+            transformer = TFPoseTransformer(node, target_frame=target_frame)
+        generation = generate_candidates_with_context(planner, point_cloud, transformer)
         print(f"GraspGenX status: {generation.get('status')}")
         if generation.get("message"):
             print(f"GraspGenX message: {generation.get('message')}")
@@ -1225,12 +1344,6 @@ def main() -> None:
             print("No valid GraspGenX candidates.")
             return
 
-        target_frame = perception_config.get("perception", {}).get("target_frame", "base_link")
-        transformer = None
-        if target_frame:
-            transformer = getattr(camera_backend, "pose_transformer", None)
-            if transformer is None or getattr(transformer, "target_frame", None) != target_frame:
-                transformer = TFPoseTransformer(node, target_frame=target_frame)
         ee_transform_config = preview_config.get("grasp_frame_to_ee_frame", {})
         print(
             "Grasp frame -> MoveIt EE transform: "

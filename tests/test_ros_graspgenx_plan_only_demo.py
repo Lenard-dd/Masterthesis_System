@@ -89,6 +89,52 @@ class FakeReachabilityBackend(FakePlanOnlyBackend):
         }
 
 
+def test_sparse_candidate_keeps_full_orientation_even_when_relaxation_is_configured():
+    backend = FakePlanOnlyBackend()
+    candidate = copy.deepcopy(FAKE_CANDIDATE)
+    candidate["metadata"] = {"generation_branch": "obb_sparse"}
+    result = screen_grasp_candidates_for_plan_only(
+        candidates=[candidate], point_cloud={},
+        preview_config={"candidate_screening": {
+            "variants": ["relaxed_orientation", "position_only"],
+            "full_orientation_tolerance_rad": 0.05,
+        }},
+        target_frame="base_link", transformer=None, backend=backend,
+        trajectory_validator=AllowValidator(),
+    )
+    assert result["variant"] == "full_pose"
+    assert len(backend.plan_calls) == 3
+    assert all(call["orientation_tolerance"] == 0.05 for call in backend.plan_calls)
+
+
+def test_sparse_symmetry_uses_nearest_pose_without_planning_opposite_fallback():
+    backend = FakePlanOnlyBackend()
+    candidate = copy.deepcopy(FAKE_CANDIDATE)
+    candidate.update({
+        "closing_axis": [-1.0, 0.0, 0.0],
+        "approach_vector": [0.0, 0.0, 1.0],
+        "metadata": {"generation_branch": "obb_sparse"},
+    })
+    candidate["pose"]["orientation"] = {"x": 0.0, "y": 0.0, "z": 1.0, "w": 0.0}
+
+    result = screen_grasp_candidates_for_plan_only(
+        candidates=[candidate], point_cloud={"frame": "base_link"},
+        preview_config={"candidate_screening": {
+            "variants": ["full_pose"],
+            "grasp_preferences": {
+                "current_gripper_closing_axis": [1.0, 0.0, 0.0],
+                "parallel_jaw_symmetry_enabled": True,
+            },
+        }},
+        target_frame="base_link", transformer=None, backend=backend,
+        trajectory_validator=AllowValidator(),
+    )
+
+    assert result["selected"]["closing_axis"] == pytest.approx([1.0, 0.0, 0.0])
+    assert result["selected"]["metadata"]["parallel_jaw_symmetry_role"] == "preferred"
+    assert len(backend.plan_calls) == 3
+
+
 class FakeSequenceReachabilityBackend(FakePlanOnlyBackend):
     def plan_to_pose(self, **kwargs):
         self.plan_calls.append(kwargs)
@@ -109,6 +155,64 @@ class FakeSequenceReachabilityBackend(FakePlanOnlyBackend):
                 "trajectory_preview": {},
             },
         }
+
+
+class FakeWristBranchBackend(FakePlanOnlyBackend):
+    def plan_to_pose(self, **kwargs):
+        self.plan_calls.append(kwargs)
+        # The canonical pose deliberately represents a poor IK branch here;
+        # its 180-degree equivalent represents the short wrist solution.
+        wrist_delta = (
+            3.0 if abs(float(kwargs["orientation"].get("w", 1.0))) > 0.5 else 0.1
+        )
+        plan_id = f"wrist_plan_{len(self.plan_calls)}"
+        return {
+            "success": True,
+            "message": "fake wrist branch",
+            "plan_id": plan_id,
+            "summary": {
+                "success": True,
+                "num_trajectory_points": 2,
+                "max_joint_delta_rad": wrist_delta,
+                "joint_names": ["wrist_3_joint"],
+                "trajectory_preview": {
+                    "first_point_positions": [0.0],
+                    "last_point_positions": [wrist_delta],
+                },
+            },
+        }
+
+
+def test_large_wrist_rotation_plans_and_selects_symmetry_fallback():
+    backend = FakeWristBranchBackend()
+    candidate = copy.deepcopy(FAKE_CANDIDATE)
+    candidate.update({
+        "closing_axis": [-1.0, 0.0, 0.0],
+        "approach_vector": [0.0, 0.0, 1.0],
+        "metadata": {
+            "generation_branch": "diffusion",
+            "gripper_name": "robotiq_2f_140",
+        },
+    })
+    candidate["pose"]["orientation"] = {"x": 0.0, "y": 0.0, "z": 1.0, "w": 0.0}
+
+    result = screen_grasp_candidates_for_plan_only(
+        candidates=[candidate], point_cloud={"frame": "base_link"},
+        preview_config={"candidate_screening": {
+            "variants": ["full_pose"],
+            "grasp_preferences": {
+                "current_gripper_closing_axis": [1.0, 0.0, 0.0],
+                "parallel_jaw_symmetry_enabled": True,
+                "symmetry_replan_wrist_threshold_rad": 2.0,
+            },
+        }},
+        target_frame="base_link", transformer=None, backend=backend,
+        trajectory_validator=AllowValidator(),
+    )
+
+    assert result["selected"]["candidate_id"] == "grasp_1__sym180"
+    assert result["attempt"]["wrist_3_joint_delta_rad"] == pytest.approx(0.3)
+    assert len(backend.plan_calls) == 6
 
 
 class FakeCameraBackend:

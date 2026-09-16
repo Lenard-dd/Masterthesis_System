@@ -28,6 +28,10 @@ class GraspGenXSubprocessAdapter:
         "estimate_gripper_width": True,
         "width_axis_index": 1,
         "width_clearance_m": 0.01,
+        "strategy": "diffusion",
+        "sparse_quota": 24,
+        "moe_num_yaws": 36,
+        "moe_z_offsets_cm": "-2,0",
     }
 
     def __init__(self, config: dict | None = None):
@@ -36,7 +40,7 @@ class GraspGenXSubprocessAdapter:
             config = config.get("graspgenx_subprocess") or {}
         self.config = {**self.DEFAULT_CONFIG, **config}
 
-    def generate_candidates(self, point_cloud_path: str) -> dict:
+    def generate_candidates(self, point_cloud_path: str, *, strategy: str | None = None) -> dict:
         if not self.config.get("enabled", True):
             return self._result("NOT_AVAILABLE", "GraspGenX subprocess is disabled.")
         runner = self._runner_path()
@@ -47,7 +51,7 @@ class GraspGenXSubprocessAdapter:
         if not Path(point_cloud_path).is_file():
             return self._result("FAILED", f"Point cloud does not exist: {point_cloud_path}")
 
-        command = self._build_command(point_cloud_path, runner)
+        command = self._build_command(point_cloud_path, runner, strategy=strategy)
         try:
             completed = subprocess.run(
                 command,
@@ -73,7 +77,7 @@ class GraspGenXSubprocessAdapter:
             return self._result("FAILED", f"GraspGenX runner did not return valid JSON.{suffix}")
         return self._normalize(value)
 
-    def _build_command(self, point_cloud_path: str, runner: Path | None = None) -> list[str]:
+    def _build_command(self, point_cloud_path: str, runner: Path | None = None, *, strategy: str | None = None) -> list[str]:
         runner = runner or self._runner_path()
         command = [
             str(self.config["conda_executable"]), "run", "-n",
@@ -90,6 +94,14 @@ class GraspGenXSubprocessAdapter:
             "--width-axis-index", str(int(self.config["width_axis_index"])),
             "--width-clearance-m", str(float(self.config["width_clearance_m"])),
         ]
+        chosen_strategy = str(strategy or self.config.get("strategy", "diffusion"))
+        if chosen_strategy != "diffusion":
+            command.extend([
+                "--strategy", chosen_strategy,
+                "--sparse-quota", str(int(self.config["sparse_quota"])),
+                "--moe-num-yaws", str(int(self.config["moe_num_yaws"])),
+                "--moe-z-offsets-cm=" + str(self.config["moe_z_offsets_cm"]),
+            ])
         if bool(self.config.get("estimate_gripper_width", True)):
             command.append("--estimate-gripper-width")
         else:
@@ -123,6 +135,7 @@ class GraspGenXSubprocessAdapter:
             "status": status,
             "message": str(value.get("message", "")),
             "candidates": candidates,
+            "metadata": value.get("metadata", {}) if isinstance(value.get("metadata", {}), dict) else {},
         }
 
     @staticmethod

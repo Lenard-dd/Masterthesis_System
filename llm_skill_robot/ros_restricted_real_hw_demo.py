@@ -10,8 +10,9 @@ from typing import Any
 
 from llm_skill_robot.core.audit_logger import AuditLogger
 from llm_skill_robot.grasping.grasp_execution_backend import GraspExecutionBackend
-from llm_skill_robot.grasping.graspgenx_grasp_planner import GraspGenXGraspPlanner
+from llm_skill_robot.grasping.graspgenx_grasp_planner import GraspGenXGraspPlanner, generate_candidates_with_context
 from llm_skill_robot.grasping.graspgenx_subprocess_adapter import GraspGenXSubprocessAdapter
+from llm_skill_robot.grasping.parallel_jaw_symmetry import canonicalize_sparse_parallel_jaw_candidates
 from llm_skill_robot.perception.object_point_cloud_builder import ObjectPointCloudBuilder
 from llm_skill_robot.perception.perception_factory import create_perception_pipeline
 from llm_skill_robot.perception.tf_pose_transformer import TFPoseTransformer
@@ -185,7 +186,9 @@ class RestrictedRealHardwareDemoController:
     def generate_grasp_candidates(self) -> DemoActionResult:
         if self.state.point_cloud is None:
             return self._blocked("Build an object point cloud before generating grasps.")
-        result = self.grasp_planner.generate_candidates(self.state.point_cloud["point_cloud_path"])
+        result = generate_candidates_with_context(
+            self.grasp_planner, self.state.point_cloud, self.transformer,
+        )
         candidates = result.get("candidates", [])
         if not candidates:
             return self._blocked(f"No GraspGenX candidates: {result.get('message', 'none returned')}")
@@ -651,9 +654,31 @@ class RestrictedRealHardwareDemoController:
         width_screened: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         config = self._grasp_preference_config()
+        source_items = {
+            id(item["candidate"]): item for item in width_screened
+        }
+        primaries, fallbacks = canonicalize_sparse_parallel_jaw_candidates(
+            [item["candidate"] for item in width_screened],
+            config.get("current_gripper_closing_axis"),
+        ) if config.get("parallel_jaw_symmetry_enabled", True) else (
+            [item["candidate"] for item in width_screened], []
+        )
+        by_candidate_id = {
+            str(_candidate_value(item["candidate"], "candidate_id", "")): item
+            for item in width_screened
+        }
+        normalized_items = []
+        for candidate in primaries + fallbacks:
+            metadata = _candidate_value(candidate, "metadata", {}) or {}
+            source_id = str(
+                metadata.get("parallel_jaw_symmetry_base_candidate_id")
+                or _candidate_value(candidate, "candidate_id", "")
+            )
+            source = source_items.get(id(candidate)) or by_candidate_id.get(source_id, {})
+            normalized_items.append({**source, "candidate": candidate})
         scored = []
         rejected = []
-        for item in width_screened:
+        for item in normalized_items:
             preference = grasp_preference_score(item["candidate"], config)
             if not preference["allowed"]:
                 rejected.append(
@@ -673,6 +698,9 @@ class RestrictedRealHardwareDemoController:
             )
         scored.sort(
             key=lambda item: (
+                1 if (_candidate_value(item["candidate"], "metadata", {}) or {}).get(
+                    "parallel_jaw_symmetry_role"
+                ) == "fallback" else 0,
                 -float(item["preference"].get("score", 0.0)),
                 -float(_candidate_value(item["candidate"], "score", 0.0) or 0.0),
             )

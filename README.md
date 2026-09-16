@@ -351,12 +351,29 @@ GraspGenX is connected through a subprocess JSON runner configured in `config/gr
 ```bash
 conda activate graspgenx
 cd ~/GraspGenX/GraspGenX
-python client-server/graspgenx_server.py \
+python /home/lenard/dev_ws/src/LLM_Ros/scripts/graspgenx_sparse_server.py \
   --config ~/GraspGenX/GraspGenX/ext/graspgenx_checkpoints/release \
   --assets_dir ~/GraspGenX/GraspGenX/assets \
   --default_gripper robotiq_2f_140 \
   --port 5556
 ```
+
+The project server extends the upstream ZMQ server with `infer_sparse` while
+retaining its standard `infer`, health, and metadata actions. The configured
+`sparse` strategy converts the masked D435i point cloud from
+`camera_color_optical_frame` into `base_link` through the live robot TF chain,
+then asks GraspMoE for top-down OBB sparse candidates and diffusion candidates.
+Up to 24 of the returned 100 candidates are reserved for the OBB branch; each
+candidate records `generation_branch` as `obb_sparse` or `diffusion`. The
+server assumes `base_link` +Z is near the calibrated tabletop normal. If TF
+is unavailable, the original camera-frame diffusion path is used. If the
+unmodified upstream server is running, it still handles diffusion requests;
+the runner reports `sparse_fallback` in metadata. To restore the previous
+strategy explicitly, set `graspgenx_subprocess.strategy: diffusion` in
+`config/grasping.yaml` and use the upstream server command.
+
+See [sparse strategy setup and validation](docs/graspgenx_sparse.md) for GUI
+restart instructions, frame assumptions, diagnostics, and rollback.
 
 Then, to test only the width recommended by a GraspGenX candidate, run:
 

@@ -15,7 +15,7 @@ from llm_skill_robot.core.grasp_motion_policy import GraspMotionPolicy
 from llm_skill_robot.grasping.full_grasp_state_machine import FullGraspStateMachine
 from llm_skill_robot.grasping.grasp_execution_backend import GraspExecutionBackend
 from llm_skill_robot.grasping.grasp_verifier import GraspVerifier
-from llm_skill_robot.grasping.graspgenx_grasp_planner import GraspGenXGraspPlanner
+from llm_skill_robot.grasping.graspgenx_grasp_planner import GraspGenXGraspPlanner, generate_candidates_with_context
 from llm_skill_robot.grasping.graspgenx_subprocess_adapter import GraspGenXSubprocessAdapter
 from llm_skill_robot.perception.object_point_cloud_builder import ObjectPointCloudBuilder
 from llm_skill_robot.perception.perception_factory import create_perception_pipeline
@@ -197,7 +197,7 @@ class FullGraspSupervisedDemoController:
         if not self._transition(self.state.POINT_CLOUD_BUILT, "Object point cloud built."):
             return self._report()
 
-        generation = self.grasp_planner.generate_candidates(point_cloud["point_cloud_path"])
+        generation = generate_candidates_with_context(self.grasp_planner, point_cloud, self.transformer)
         selection = self.select_safe_grasp_candidate(
             generation.get("candidates", []), point_cloud
         )

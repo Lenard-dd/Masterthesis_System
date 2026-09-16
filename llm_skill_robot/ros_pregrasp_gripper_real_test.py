@@ -8,7 +8,7 @@ import sys
 from typing import Any
 
 from llm_skill_robot.core.audit_logger import AuditLogger
-from llm_skill_robot.grasping.graspgenx_grasp_planner import GraspGenXGraspPlanner
+from llm_skill_robot.grasping.graspgenx_grasp_planner import GraspGenXGraspPlanner, generate_candidates_with_context
 from llm_skill_robot.grasping.graspgenx_subprocess_adapter import GraspGenXSubprocessAdapter
 from llm_skill_robot.perception.object_point_cloud_builder import ObjectPointCloudBuilder
 from llm_skill_robot.perception.perception_factory import create_perception_pipeline
@@ -115,7 +115,9 @@ class PregraspGripperRealTestController:
                 f"Point-cloud generation failed: {point_cloud.get('message', 'unavailable')}"
             )
 
-        generation = self.grasp_planner.generate_candidates(point_cloud["point_cloud_path"])
+        generation = generate_candidates_with_context(
+            self.grasp_planner, point_cloud, self.pregrasp_controller.transformer,
+        )
         candidates = generation.get("candidates", [])
         if not candidates:
             return self._blocked(
