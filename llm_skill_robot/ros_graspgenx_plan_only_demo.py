@@ -407,6 +407,7 @@ def screen_grasp_candidates_for_plan_only(
     velocity_scale: float = 0.05,
     acceleration_scale: float = 0.05,
     pose_adjuster: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    candidate_pose_adjuster: Callable[[dict[str, Any], Any], dict[str, Any]] | None = None,
     pose_validator: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> dict:
     """Select a GraspGenX candidate using MoveIt reachability and validation.
@@ -471,7 +472,9 @@ def screen_grasp_candidates_for_plan_only(
                 target_frame,
                 transformer,
             )
-            if pose_adjuster is not None:
+            if candidate_pose_adjuster is not None:
+                poses = candidate_pose_adjuster(poses, candidate)
+            elif pose_adjuster is not None:
                 poses = pose_adjuster(poses)
         except ValueError as exc:
             attempts.append(
@@ -616,7 +619,9 @@ def screen_grasp_candidates_for_plan_only(
             fallback_result = screen_grasp_candidates_for_plan_only(
                 symmetry_fallbacks, point_cloud, fallback_config, target_frame,
                 transformer, backend, trajectory_validator, velocity_scale,
-                acceleration_scale, pose_adjuster, pose_validator,
+                acceleration_scale, pose_adjuster,
+                candidate_pose_adjuster=candidate_pose_adjuster,
+                pose_validator=pose_validator,
             )
             fallback_result["attempts"] = attempts + fallback_result.get("attempts", [])
             return fallback_result
@@ -658,7 +663,9 @@ def screen_grasp_candidates_for_plan_only(
             fallback_result = screen_grasp_candidates_for_plan_only(
                 [matching_fallback], point_cloud, fallback_config, target_frame,
                 transformer, backend, trajectory_validator, velocity_scale,
-                acceleration_scale, pose_adjuster, pose_validator,
+                acceleration_scale, pose_adjuster,
+                candidate_pose_adjuster=candidate_pose_adjuster,
+                pose_validator=pose_validator,
             )
             attempts += fallback_result.get("attempts", [])
             fallback_attempt = fallback_result.get("attempt")

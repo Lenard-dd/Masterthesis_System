@@ -505,11 +505,15 @@ class RestrictedRealHardwareDemoController:
             self.transformer,
         )
         if self.tabletop_safety is not None:
-            poses = self.tabletop_safety.apply_grasp_contact_backoff(poses)
+            width = _candidate_value(candidate, "gripper_width_m", None)
+            poses = self.tabletop_safety.apply_grasp_contact_backoff(
+                poses, gripper_width_m=width,
+            )
             if self.tabletop_safety.grasp_contact_backoff_m > 0.0:
                 self._audit(
                     "grasp_contact_backoff_applied",
                     distance_m=self.tabletop_safety.grasp_contact_backoff_m,
+                    gripper_width_m=width,
                     direction="toward_pregrasp_along_approach_axis",
                 )
         return {

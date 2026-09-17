@@ -455,6 +455,29 @@ def test_candidate_screening_adjusts_poses_before_moveit_planning():
     assert result["attempt"]["tabletop_safety"]["allowed"] is True
 
 
+def test_candidate_screening_passes_width_to_candidate_pose_adjuster():
+    backend = FakePlanOnlyBackend()
+    observed = {}
+
+    def adjust(poses, candidate):
+        observed["width"] = candidate["gripper_width_m"]
+        return poses
+
+    result = screen_grasp_candidates_for_plan_only(
+        [FAKE_CANDIDATE],
+        point_cloud={"frame": "base_link"},
+        preview_config={"candidate_screening": {"variants": ["full_pose"]}},
+        target_frame="base_link",
+        transformer=None,
+        backend=backend,
+        trajectory_validator=AllowValidator(),
+        candidate_pose_adjuster=adjust,
+    )
+
+    assert result["selected"] is not None
+    assert observed["width"] == pytest.approx(FAKE_CANDIDATE["gripper_width_m"])
+
+
 def test_candidate_screening_blocks_unsafe_pose_before_moveit_planning():
     backend = FakePlanOnlyBackend()
 

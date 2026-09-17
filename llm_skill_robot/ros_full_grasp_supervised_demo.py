@@ -581,11 +581,15 @@ class FullGraspSupervisedDemoController:
             self.transformer,
         )
         if self.tabletop_safety is not None:
-            poses = self.tabletop_safety.apply_grasp_contact_backoff(poses)
+            width = _value(candidate, "gripper_width_m", None)
+            poses = self.tabletop_safety.apply_grasp_contact_backoff(
+                poses, gripper_width_m=width,
+            )
             if self.tabletop_safety.grasp_contact_backoff_m > 0.0:
                 self.results["grasp_contact_backoff"] = {
                     "enabled": True,
                     "distance_m": self.tabletop_safety.grasp_contact_backoff_m,
+                    "gripper_width_m": width,
                     "direction": "toward_pregrasp_along_approach_axis",
                 }
         return poses

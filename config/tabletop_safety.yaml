@@ -30,6 +30,32 @@ tabletop_safety:
   # candidates, instead of treating it as a fixed table-normal distance.
   finger_axial_close_sweep_m: 0.025
 
+  # A smaller nut requires the Robotiq fingers to close farther.  The lowest
+  # occupied finger/link point then sits below the nominal grasp contact point.
+  # These conservative measured-width tiers are added to the table clearance;
+  # the pose is lifted only by the remaining amount needed to satisfy it.
+  narrow_grasp_clearance_tiers:
+    - {max_width_m: 0.015, extra_clearance_m: 0.008}
+    - {max_width_m: 0.030, extra_clearance_m: 0.005}
+
+  # Sample both Robotiq finger-pad collision boxes throughout closing.  The
+  # lowest transformed corner, rather than the nominal contact centre, owns
+  # the table-clearance correction.
+  robotiq_2f_140_finger_envelope:
+    enabled: true
+    tool0_to_gripper_base_m: [0.0, 0.0, 0.004]
+    joint_min_rad: 0.0
+    joint_max_rad: 0.70
+    joint_samples: 15
+    extra_clearance_m: 0.005
+    # Larger corrections risk lifting the fingers above a thin object's usable
+    # side surface; reject that candidate and try another one instead.
+    max_auto_lift_m: 0.012
+    # The full 0..0.70 rad proxy is deliberately conservative and previously
+    # rejected every GraspGenX candidate. Use it to request a bounded lift;
+    # keep the calibrated contact-point and MoveIt checks as the hard gates.
+    hard_reject: false
+
   # Base allowance covering the measured plane residual (~4.8 mm), depth/TF
   # noise and a small remaining physical margin.
   collision_margin_m: 0.008
