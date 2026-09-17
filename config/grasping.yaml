@@ -3,6 +3,11 @@ grasping:
   # This is intentionally below the restricted real-arm approach limit.
   place_motion:
     approach_height_m: 0.05
+    # For inside placement, keep the calibrated Robotiq grasp/contact region
+    # above the detected rim throughout release.  This deliberately produces
+    # a short drop for small containers instead of inserting the fingers.
+    tool0_to_grasp_contact_m: [0.0, 0.0, 0.199]
+    inside_contact_clearance_above_rim_m: 0.04
     # Object-centre to tool0 offset is preserved at placement.  With the
     # Robotiq/tool0 frame used here, valid reviewed grasps can be about 0.23 m
     # from an object's localized centre; keep a bounded allowance instead of

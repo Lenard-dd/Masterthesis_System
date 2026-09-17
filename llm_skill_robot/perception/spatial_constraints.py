@@ -13,6 +13,7 @@ from typing import Any, Literal
 
 ConstraintKind = Literal[
     "axis_equal", "axis_separation", "axis_midpoint", "table_support", "surface_support",
+    "opening_fit", "above_opening_release", "approach_along_normal", "collision_free_exit",
 ]
 
 
@@ -80,6 +81,18 @@ class SpatialConstraintCompiler:
                                    description="align horizontal centres"),
                 GeometryConstraint("surface_support", ("z",), references,
                                    description="support source on reference top surface"),
+            ))
+        if relation == "inside":
+            return RelationConstraintSet(relation, (
+                GeometryConstraint("opening_fit", ("x", "y"), references,
+                                   clearance_m=self.horizontal_clearance_m,
+                                   description="object footprint fits through the opening"),
+                GeometryConstraint("above_opening_release", ("x", "y", "z"), references,
+                                   description="release above the rim without gripper insertion"),
+                GeometryConstraint("approach_along_normal", ("z",), references,
+                                   description="vertical approach through opening centre"),
+                GeometryConstraint("collision_free_exit", ("z",), references,
+                                   description="vertical retreat without entering the container"),
             ))
         if relation in {"aligned_x_with", "aligned_y_with", "same_height_as"}:
             axis = {"aligned_x_with": "x", "aligned_y_with": "y", "same_height_as": "z"}[relation]

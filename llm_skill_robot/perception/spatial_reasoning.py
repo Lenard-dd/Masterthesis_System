@@ -17,8 +17,8 @@ from llm_skill_robot.perception.spatial_constraints import (
 )
 
 
-SpatialRelation = Literal["between", "right_of", "left_of", "on_top_of"]
-SUPPORTED_RELATIONS = {"between", "right_of", "left_of", "on_top_of"}
+SpatialRelation = Literal["between", "right_of", "left_of", "on_top_of", "inside"]
+SUPPORTED_RELATIONS = {"between", "right_of", "left_of", "on_top_of", "inside"}
 
 
 class SpatialReasoningError(ValueError):
@@ -43,6 +43,9 @@ class RelativePlacePosePlanner:
         horizontal_clearance_m: float = 0.03,
         vertical_clearance_m: float = 0.003,
         right_axis: str = "x",
+        inside_wall_estimate_m: float = 0.008,
+        inside_object_clearance_m: float = 0.006,
+        inside_release_clearance_m: float = 0.040,
     ) -> None:
         if default_object_size_m <= 0.0:
             raise ValueError("default_object_size_m must be positive.")
@@ -54,6 +57,9 @@ class RelativePlacePosePlanner:
         self.horizontal_clearance_m = float(horizontal_clearance_m)
         self.vertical_clearance_m = float(vertical_clearance_m)
         self.right_axis = right_axis
+        self.inside_wall_estimate_m = float(inside_wall_estimate_m)
+        self.inside_object_clearance_m = float(inside_object_clearance_m)
+        self.inside_release_clearance_m = float(inside_release_clearance_m)
 
     def compute(
         self,
@@ -95,8 +101,12 @@ class RelativePlacePosePlanner:
                 reference_sizes[0],
                 direction=1.0 if normalized_relation == "right_of" else -1.0,
             )
-        else:
+        elif normalized_relation == "on_top_of":
             target = self._on_top_of(source_pose, source_size, reference_poses[0], reference_sizes[0])
+        else:
+            target, inside_safety = self._inside_above_opening(
+                source_pose, source_size, references[0], reference_poses[0], reference_sizes[0],
+            )
 
         estimated_dimensions = source_size.estimated or any(size.estimated for size in reference_sizes)
         constraint_set = SpatialConstraintCompiler(
@@ -115,6 +125,8 @@ class RelativePlacePosePlanner:
             "target_pose": target.model_dump(),
             "requires_confirmation": True,
             "geometry_constraints": constraint_set.as_dict(),
+            **({"inside_safety": inside_safety, "placement_mode": "above_opening_drop"}
+               if normalized_relation == "inside" else {}),
             "assumptions": {
                 "right_axis": f"+{self.right_axis}",
                 "horizontal_clearance_m": self.horizontal_clearance_m,
@@ -122,6 +134,52 @@ class RelativePlacePosePlanner:
                 "object_dimensions_estimated": estimated_dimensions,
                 "target_pose_is_plan_only": True,
             },
+        }
+
+    def _inside_above_opening(
+        self, source_pose: ObjectPose, source_size: ObjectDimensions,
+        container: SceneObject, container_pose: ObjectPose, container_size: ObjectDimensions,
+    ) -> tuple[ObjectPose, dict[str, Any]]:
+        """Plan a low drop above the opening; the gripper never enters the box."""
+        raw_opening = container.metadata.get("container_opening_dimensions_m")
+        measured = isinstance(raw_opening, dict) and all(
+            raw_opening.get(axis) is not None for axis in ("x", "y")
+        )
+        if measured:
+            opening_x = float(raw_opening["x"])
+            opening_y = float(raw_opening["y"])
+        else:
+            opening_x = container_size.x - 2.0 * self.inside_wall_estimate_m
+            opening_y = container_size.y - 2.0 * self.inside_wall_estimate_m
+        required_x = source_size.x + 2.0 * self.inside_object_clearance_m
+        required_y = source_size.y + 2.0 * self.inside_object_clearance_m
+        if opening_x <= 0.0 or opening_y <= 0.0:
+            raise SpatialReasoningError("Container opening dimensions are unavailable or invalid.")
+        if required_x > opening_x or required_y > opening_y:
+            raise SpatialReasoningError(
+                "Source object plus inside-placement clearance does not fit through the container opening "
+                f"(required {required_x:.3f} x {required_y:.3f} m, available "
+                f"{opening_x:.3f} x {opening_y:.3f} m)."
+            )
+        rim_z = container_pose.z + container_size.z / 2.0
+        target = ObjectPose(
+            frame=source_pose.frame,
+            x=container_pose.x,
+            y=container_pose.y,
+            z=rim_z + source_size.z / 2.0 + self.inside_release_clearance_m,
+        )
+        return target, {
+            "mode": "above_opening_drop",
+            "gripper_enters_container": False,
+            "opening_dimensions_m": {"x": opening_x, "y": opening_y},
+            "opening_dimensions_measured": measured,
+            "required_object_envelope_m": {"x": required_x, "y": required_y},
+            "release_clearance_above_rim_m": self.inside_release_clearance_m,
+            "rim_z_m": rim_z,
+            "minimum_object_bottom_z_m": rim_z + self.inside_release_clearance_m,
+            "source_height_m": source_size.z,
+            "approach": "vertical_along_opening_normal",
+            "retreat": "vertical",
         }
 
     def compute_composite(
@@ -163,6 +221,7 @@ class RelativePlacePosePlanner:
                     "right_of": (self.right_axis, "z"),
                     "left_of": (self.right_axis, "z"),
                     "on_top_of": ("x", "y", "z"),
+                    "inside": ("x", "y", "z"),
                 }[relation]
                 assignments.append({axis: float(single[axis]) for axis in axes})
             else:

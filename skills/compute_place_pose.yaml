@@ -8,7 +8,7 @@ parameters:
   - name: "relation"
     type: "string"
     required: true
-    allowed_values: ["between", "right_of", "left_of", "on_top_of"]
+    allowed_values: ["between", "right_of", "left_of", "on_top_of", "inside", "composite"]
   - name: "reference_ids"
     type: "string_list"
     required: true

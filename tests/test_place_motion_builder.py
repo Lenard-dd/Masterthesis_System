@@ -45,3 +45,65 @@ def test_place_motion_accepts_a_reviewed_tool_offset_within_configured_envelope(
 
     assert result["source_to_gripper_offset_norm_m"] == pytest.approx(0.229)
     assert result["place_contact_pose"]["position"]["x"] == pytest.approx(0.829)
+
+
+def test_inside_place_motion_preserves_non_inserting_release_invariant():
+    safety = {
+        "mode": "above_opening_drop",
+        "gripper_enters_container": False,
+        "minimum_object_bottom_z_m": 0.10,
+        "source_height_m": 0.02,
+        "rim_z_m": 0.08,
+    }
+    result = PlaceMotionBuilder().build(
+        source_pose={"frame": "base_link", "x": 0.2, "y": 0.0, "z": 0.01},
+        target_pose={"frame": "base_link", "x": 0.5, "y": 0.1, "z": 0.11},
+        grasp_pose={
+            "frame": "base_link", "position": {"x": 0.2, "y": 0.0, "z": 0.06},
+            "orientation": {"x": 0.0, "y": 1.0, "z": 0.0, "w": 0.0},
+        },
+        placement_safety=safety,
+    )
+
+    assert result["inside_safety"]["gripper_enters_container"] is False
+    assert result["inside_safety"]["release_grasp_contact_z_m"] >= 0.12 - 1e-9
+    assert result["place_approach_pose"]["position"]["z"] > result["place_contact_pose"]["position"]["z"]
+
+
+def test_inside_place_motion_rejects_release_below_safe_rim_clearance():
+    with pytest.raises(PlaceMotionError, match="below its safe rim clearance"):
+        PlaceMotionBuilder().build(
+            source_pose={"frame": "base_link", "x": 0.2, "y": 0.0, "z": 0.01},
+            target_pose={"frame": "base_link", "x": 0.5, "y": 0.1, "z": 0.09},
+            grasp_pose={
+                "frame": "base_link", "position": {"x": 0.2, "y": 0.0, "z": 0.06},
+                "orientation": {"x": 0.0, "y": 1.0, "z": 0.0, "w": 0.0},
+            },
+            placement_safety={
+                "mode": "above_opening_drop", "gripper_enters_container": False,
+                "minimum_object_bottom_z_m": 0.10, "source_height_m": 0.02,
+                "rim_z_m": 0.08,
+            },
+        )
+
+
+def test_inside_lifts_release_pose_until_robotiq_contact_region_clears_rim():
+    result = PlaceMotionBuilder(
+        tool0_to_grasp_contact_m=(0.0, 0.0, 0.0),
+        inside_contact_clearance_above_rim_m=0.04,
+    ).build(
+        source_pose={"frame": "base_link", "x": 0.2, "y": 0.0, "z": 0.01},
+        target_pose={"frame": "base_link", "x": 0.5, "y": 0.1, "z": 0.11},
+        grasp_pose={
+            "frame": "base_link", "position": {"x": 0.2, "y": 0.0, "z": 0.01},
+            "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+        },
+        placement_safety={
+            "mode": "above_opening_drop", "gripper_enters_container": False,
+            "minimum_object_bottom_z_m": 0.10, "source_height_m": 0.02,
+            "rim_z_m": 0.08,
+        },
+    )
+
+    assert result["place_contact_pose"]["position"]["z"] == pytest.approx(0.12)
+    assert result["inside_safety"]["release_pose_upward_adjustment_m"] == pytest.approx(0.01)

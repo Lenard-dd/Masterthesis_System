@@ -154,4 +154,49 @@ def test_constraint_solver_rejects_conflicting_axis_assignments():
 
 def test_constraint_compiler_rejects_unknown_relation():
     with pytest.raises(ValueError, match="Unsupported constraint relation"):
-        SpatialConstraintCompiler().compile("inside", ["red_box_1"])
+        SpatialConstraintCompiler().compile("teleport_near", ["red_box_1"])
+
+
+def test_inside_uses_safe_above_opening_release_without_gripper_insertion():
+    scene = SceneModel(objects=[
+        _object("nut_1", 0.10, 0.10, 0.01, dimensions=(0.02, 0.02, 0.01)),
+        SceneObject(
+            object_id="red_box_1", label="red box", confidence=0.9, pose_available=True,
+            pose=ObjectPose(frame="base_link", x=0.40, y=0.20, z=0.04),
+            metadata={
+                "dimensions_m": [0.12, 0.10, 0.08],
+                "container_opening_dimensions_m": {"x": 0.10, "y": 0.08},
+            },
+        ),
+    ])
+
+    result = RelativePlacePosePlanner().compute(
+        scene, source_id="nut_1", relation="inside", reference_ids=["red_box_1"],
+    )
+
+    assert result["placement_mode"] == "above_opening_drop"
+    assert result["inside_safety"]["gripper_enters_container"] is False
+    assert result["inside_safety"]["opening_dimensions_measured"] is True
+    assert result["target_pose"]["x"] == pytest.approx(0.40)
+    assert result["target_pose"]["y"] == pytest.approx(0.20)
+    assert result["target_pose"]["z"] == pytest.approx(0.125)
+
+
+def test_inside_rejects_object_that_does_not_fit_opening_with_clearance():
+    scene = SceneModel(objects=[
+        _object("large_object_1", 0.10, 0.10, 0.02, dimensions=(0.08, 0.07, 0.04)),
+        SceneObject(
+            object_id="small_box_1", label="small box", confidence=0.9, pose_available=True,
+            pose=ObjectPose(frame="base_link", x=0.40, y=0.20, z=0.03),
+            metadata={
+                "dimensions_m": [0.08, 0.07, 0.06],
+                "container_opening_dimensions_m": {"x": 0.075, "y": 0.065},
+            },
+        ),
+    ])
+
+    with pytest.raises(SpatialReasoningError, match="does not fit"):
+        RelativePlacePosePlanner().compute(
+            scene, source_id="large_object_1", relation="inside",
+            reference_ids=["small_box_1"],
+        )
