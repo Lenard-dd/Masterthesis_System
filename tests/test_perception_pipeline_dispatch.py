@@ -157,6 +157,46 @@ def test_compute_place_pose_uses_the_trusted_localized_scene_only():
     assert context["place_pose_plan"]["requires_confirmation"] is True
 
 
+def test_compute_place_pose_dispatches_combined_relation_constraints():
+    context = {
+        "scene": SceneModel(objects=[
+            SceneObject(
+                object_id="source_1", label="source", confidence=0.9, pose_available=True,
+                pose=ObjectPose(frame="base_link", x=0.1, y=0.2, z=0.02),
+                metadata={"dimensions_m": [0.04, 0.04, 0.04]},
+            ),
+            SceneObject(
+                object_id="right_ref_1", label="right ref", confidence=0.9, pose_available=True,
+                pose=ObjectPose(frame="base_link", x=0.3, y=0.0, z=0.02),
+                metadata={"dimensions_m": [0.04, 0.04, 0.04]},
+            ),
+            SceneObject(
+                object_id="align_ref_1", label="align ref", confidence=0.9, pose_available=True,
+                pose=ObjectPose(frame="base_link", x=0.5, y=0.12, z=0.02),
+                metadata={"dimensions_m": [0.04, 0.04, 0.04]},
+            ),
+        ]),
+    }
+    step = PlanStep(
+        step_id="2", skill_id="compute_place_pose", description="Combined constraints",
+        parameters={
+            "source_id": "source_1", "relation": "composite",
+            "reference_ids": ["right_ref_1", "align_ref_1"],
+            "relation_constraints": [
+                {"relation": "right_of", "reference_ids": ["right_ref_1"]},
+                {"relation": "aligned_y_with", "reference_ids": ["align_ref_1"]},
+            ],
+        },
+    )
+
+    result = execute_non_motion_skill(step, gripper_backend=None, context=context)
+
+    assert result["success"] is True
+    assert result["output"]["relation"] == "composite"
+    assert result["output"]["target_pose"]["x"] == pytest.approx(0.37)
+    assert result["output"]["target_pose"]["y"] == pytest.approx(0.12)
+
+
 class _GeometryCamera:
     latest_depth_msg = {"image": [[1000]], "encoding": "16UC1"}
     latest_camera_info_msg = {"k": [100.0, 0, 0, 0, 100.0, 0, 0, 0, 1]}

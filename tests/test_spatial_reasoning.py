@@ -5,6 +5,11 @@ from llm_skill_robot.perception.spatial_reasoning import (
     RelativePlacePosePlanner,
     SpatialReasoningError,
 )
+from llm_skill_robot.perception.spatial_constraints import (
+    AxisAssignmentSolver,
+    ConstraintConflictError,
+    SpatialConstraintCompiler,
+)
 
 
 def _object(object_id, x, y, z, *, dimensions=(0.04, 0.04, 0.04)):
@@ -108,3 +113,45 @@ def test_between_requires_two_reference_objects():
             relation="between",
             reference_ids=["red_cube_1"],
         )
+
+
+def test_relation_is_exposed_as_auditable_base_constraints():
+    result = RelativePlacePosePlanner().compute(
+        _scene(), source_id="white_cube_1", relation="right_of",
+        reference_ids=["red_cube_1"],
+    )
+
+    constraints = result["geometry_constraints"]
+    assert constraints["relation"] == "right_of"
+    assert [item["kind"] for item in constraints["constraints"]] == [
+        "axis_separation", "table_support",
+    ]
+    assert constraints["constraints"][0]["axes"] == ["x"]
+
+
+def test_composite_solver_combines_side_and_alignment_constraints_into_one_pose():
+    result = RelativePlacePosePlanner().compute_composite(
+        _scene(), source_id="black_cube_1",
+        relation_specs=[
+            {"relation": "right_of", "reference_ids": ["red_cube_1"]},
+            {"relation": "aligned_y_with", "reference_ids": ["white_cube_1"]},
+        ],
+    )
+
+    assert result["relation"] == "composite"
+    assert result["target_pose"]["x"] == pytest.approx(0.37)
+    assert result["target_pose"]["y"] == pytest.approx(0.10)
+    assert len(result["geometry_constraints"]) == 2
+
+
+def test_constraint_solver_rejects_conflicting_axis_assignments():
+    with pytest.raises(ConstraintConflictError, match="conflict on x"):
+        AxisAssignmentSolver(tolerance_m=0.001).merge(
+            {"x": 0.0, "y": 0.0, "z": 0.0},
+            [{"x": 0.1}, {"x": 0.2}],
+        )
+
+
+def test_constraint_compiler_rejects_unknown_relation():
+    with pytest.raises(ValueError, match="Unsupported constraint relation"):
+        SpatialConstraintCompiler().compile("inside", ["red_box_1"])

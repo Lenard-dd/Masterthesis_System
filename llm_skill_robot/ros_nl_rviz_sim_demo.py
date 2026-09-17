@@ -281,12 +281,20 @@ def execute_non_motion_skill(
                 perception_pipeline=perception_pipeline,
                 point_cloud_builder=point_cloud_builder,
             )
-            result = RelativePlacePosePlanner().compute(
-                latest_scene or {},
-                source_id=str(parameters.get("source_id", "")),
-                relation=str(parameters.get("relation", "")),
-                reference_ids=list(parameters.get("reference_ids", [])),
-            )
+            relation_constraints = parameters.get("relation_constraints")
+            if isinstance(relation_constraints, list) and relation_constraints:
+                result = RelativePlacePosePlanner().compute_composite(
+                    latest_scene or {},
+                    source_id=str(parameters.get("source_id", "")),
+                    relation_specs=[dict(item) for item in relation_constraints if isinstance(item, dict)],
+                )
+            else:
+                result = RelativePlacePosePlanner().compute(
+                    latest_scene or {},
+                    source_id=str(parameters.get("source_id", "")),
+                    relation=str(parameters.get("relation", "")),
+                    reference_ids=list(parameters.get("reference_ids", [])),
+                )
             result["geometry_updates"] = geometry_updates
             result["success"] = True
         except Exception as exc:

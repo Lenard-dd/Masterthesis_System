@@ -11,6 +11,10 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from llm_skill_robot.perception.scene_model import ObjectPose, SceneModel, SceneObject
+from llm_skill_robot.perception.spatial_constraints import (
+    AxisAssignmentSolver,
+    SpatialConstraintCompiler,
+)
 
 
 SpatialRelation = Literal["between", "right_of", "left_of", "on_top_of"]
@@ -95,6 +99,10 @@ class RelativePlacePosePlanner:
             target = self._on_top_of(source_pose, source_size, reference_poses[0], reference_sizes[0])
 
         estimated_dimensions = source_size.estimated or any(size.estimated for size in reference_sizes)
+        constraint_set = SpatialConstraintCompiler(
+            right_axis=self.right_axis,
+            horizontal_clearance_m=self.horizontal_clearance_m,
+        ).compile(normalized_relation, [reference.object_id for reference in references])
         return {
             "status": "SUCCESS",
             "message": f"Computed a plan-only {normalized_relation} placement pose.",
@@ -106,6 +114,7 @@ class RelativePlacePosePlanner:
             "reference_poses": [pose.model_dump() for pose in reference_poses],
             "target_pose": target.model_dump(),
             "requires_confirmation": True,
+            "geometry_constraints": constraint_set.as_dict(),
             "assumptions": {
                 "right_axis": f"+{self.right_axis}",
                 "horizontal_clearance_m": self.horizontal_clearance_m,
@@ -113,6 +122,73 @@ class RelativePlacePosePlanner:
                 "object_dimensions_estimated": estimated_dimensions,
                 "target_pose_is_plan_only": True,
             },
+        }
+
+    def compute_composite(
+        self,
+        scene: SceneModel | dict[str, Any],
+        *,
+        source_id: str,
+        relation_specs: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Solve compatible relations as one deterministic placement pose.
+
+        Each relation contributes only the axes it owns. Conflicting axis
+        assignments fail closed instead of silently choosing one relation.
+        """
+        if not relation_specs:
+            raise SpatialReasoningError("At least one relation constraint is required.")
+        scene_model = self._scene(scene)
+        source = self._resolve(scene_model, source_id)
+        source_pose = self._pose(source)
+        assignments: list[dict[str, float]] = []
+        compiled: list[dict[str, Any]] = []
+        all_reference_ids: list[str] = []
+        for spec in relation_specs:
+            relation = str(spec.get("relation", "")).strip().casefold()
+            reference_ids = [str(item) for item in spec.get("reference_ids", [])]
+            constraint_set = SpatialConstraintCompiler(
+                right_axis=self.right_axis,
+                horizontal_clearance_m=self.horizontal_clearance_m,
+            ).compile(relation, reference_ids)
+            compiled.append(constraint_set.as_dict())
+            all_reference_ids.extend(reference_ids)
+            if relation in SUPPORTED_RELATIONS:
+                single = self.compute(
+                    scene_model, source_id=source_id, relation=relation,
+                    reference_ids=reference_ids,
+                )["target_pose"]
+                axes = {
+                    "between": ("x", "y", "z"),
+                    "right_of": (self.right_axis, "z"),
+                    "left_of": (self.right_axis, "z"),
+                    "on_top_of": ("x", "y", "z"),
+                }[relation]
+                assignments.append({axis: float(single[axis]) for axis in axes})
+            else:
+                reference = self._resolve(scene_model, reference_ids[0])
+                reference_pose = self._pose(reference)
+                axis = {
+                    "aligned_x_with": "x", "aligned_y_with": "y", "same_height_as": "z",
+                }[relation]
+                assignments.append({axis: float(getattr(reference_pose, axis))})
+        merged = AxisAssignmentSolver().merge(
+            {"x": source_pose.x, "y": source_pose.y, "z": source_pose.z}, assignments,
+        )
+        target = ObjectPose(frame=source_pose.frame, **merged)
+        return {
+            "status": "SUCCESS",
+            "message": "Computed one plan-only pose satisfying the combined constraints.",
+            "source_object_id": source.object_id,
+            "source_label": source.label,
+            "reference_object_ids": list(dict.fromkeys(all_reference_ids)),
+            "relation": "composite",
+            "relation_specs": relation_specs,
+            "geometry_constraints": compiled,
+            "source_pose": source_pose.model_dump(),
+            "target_pose": target.model_dump(),
+            "requires_confirmation": True,
+            "assumptions": {"target_pose_is_plan_only": True, "constraint_solver": "axis_assignment_v1"},
         }
 
     def _between(
