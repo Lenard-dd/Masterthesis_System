@@ -48,6 +48,7 @@ class TabletopSafety:
     finger_extra_clearance_m: float = 0.0
     max_finger_envelope_lift_m: float = 0.012
     finger_envelope_hard_reject: bool = False
+    finger_envelope_narrow_hard_reject_width_m: float = 0.0
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | None) -> "TabletopSafety":
@@ -144,6 +145,10 @@ class TabletopSafety:
             finger_extra_clearance_m=_as_float(envelope.get("extra_clearance_m", 0.0), "finger-envelope extra_clearance_m"),
             max_finger_envelope_lift_m=_as_float(envelope.get("max_auto_lift_m", 0.012), "finger-envelope max_auto_lift_m"),
             finger_envelope_hard_reject=bool(envelope.get("hard_reject", False)),
+            finger_envelope_narrow_hard_reject_width_m=_as_float(
+                envelope.get("narrow_hard_reject_width_m", 0.0),
+                "finger-envelope narrow_hard_reject_width_m",
+            ),
         )
 
     def apply_grasp_contact_backoff(
@@ -247,10 +252,20 @@ class TabletopSafety:
         if lift <= 1e-9:
             return poses
         if self.finger_envelope_enabled and lift > self.max_finger_envelope_lift_m:
-            if self.finger_envelope_hard_reject:
+            narrow_hard_reject = (
+                gripper_width_m is not None
+                and self.finger_envelope_narrow_hard_reject_width_m > 0.0
+                and _as_float(gripper_width_m, "gripper_width_m")
+                <= self.finger_envelope_narrow_hard_reject_width_m
+            )
+            if self.finger_envelope_hard_reject or narrow_hard_reject:
                 raise ValueError(
                     f"Robotiq finger envelope requires {lift:.4f} m upward correction, "
-                    f"above the {self.max_finger_envelope_lift_m:.4f} m safe auto-lift limit."
+                    f"above the {self.max_finger_envelope_lift_m:.4f} m safe auto-lift limit"
+                    + (
+                        f" for narrow grasp width {_as_float(gripper_width_m, 'gripper_width_m'):.4f} m."
+                        if narrow_hard_reject else "."
+                    )
                 )
             # The pad-box proxy intentionally samples the whole closing range
             # and can overestimate intrusion for a candidate's actual contact

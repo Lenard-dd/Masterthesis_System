@@ -35,6 +35,7 @@ tabletop_safety:
   # These conservative measured-width tiers are added to the table clearance;
   # the pose is lifted only by the remaining amount needed to satisfy it.
   narrow_grasp_clearance_tiers:
+    - {max_width_m: 0.012, extra_clearance_m: 0.012}
     - {max_width_m: 0.015, extra_clearance_m: 0.008}
     - {max_width_m: 0.030, extra_clearance_m: 0.005}
 
@@ -50,7 +51,11 @@ tabletop_safety:
     extra_clearance_m: 0.005
     # Larger corrections risk lifting the fingers above a thin object's usable
     # side surface; reject that candidate and try another one instead.
-    max_auto_lift_m: 0.012
+    max_auto_lift_m: 0.016
+    # For very small screws/nuts, never execute a candidate whose complete
+    # closing envelope still needs more correction than the bounded lift.
+    # Wider objects retain the permissive capped correction used in testing.
+    narrow_hard_reject_width_m: 0.012
     # The full 0..0.70 rad proxy is deliberately conservative and previously
     # rejected every GraspGenX candidate. Use it to request a bounded lift;
     # keep the calibrated contact-point and MoveIt checks as the hard gates.

@@ -276,3 +276,52 @@ def test_finger_envelope_caps_correction_without_rejecting_candidate_by_default(
 
     assert adjusted["grasp"]["position"]["z"] == pytest.approx(0.022)
     assert adjusted["retreat"]["position"]["z"] == pytest.approx(0.112)
+
+
+def test_finger_envelope_rejects_residual_intrusion_for_very_narrow_grasp():
+    safety = TabletopSafety.from_config({
+        "tabletop_safety": {
+            "enabled": True,
+            "frame": "base_link",
+            "plane": {"normal": {"x": 0, "y": 0, "z": 1}, "d": 0},
+            "robotiq_2f_140_finger_envelope": {
+                "enabled": True,
+                "tool0_to_gripper_base_m": [0, 0, 0.004],
+                "joint_samples": 15,
+                "max_auto_lift_m": 0.016,
+                "hard_reject": False,
+                "narrow_hard_reject_width_m": 0.012,
+            },
+        }
+    })
+    poses = {"pregrasp": _pose(0.10), "grasp": _pose(0.01), "retreat": _pose(0.10)}
+    for pose in poses.values():
+        pose["orientation"] = {"x": 1.0, "y": 0.0, "z": 0.0, "w": 0.0}
+
+    with pytest.raises(ValueError, match="narrow grasp width"):
+        safety.apply_grasp_contact_backoff(poses, gripper_width_m=0.010)
+
+
+def test_narrow_only_hard_reject_keeps_wider_candidate_capped():
+    safety = TabletopSafety.from_config({
+        "tabletop_safety": {
+            "enabled": True,
+            "frame": "base_link",
+            "plane": {"normal": {"x": 0, "y": 0, "z": 1}, "d": 0},
+            "robotiq_2f_140_finger_envelope": {
+                "enabled": True,
+                "tool0_to_gripper_base_m": [0, 0, 0.004],
+                "joint_samples": 15,
+                "max_auto_lift_m": 0.016,
+                "hard_reject": False,
+                "narrow_hard_reject_width_m": 0.012,
+            },
+        }
+    })
+    poses = {"pregrasp": _pose(0.10), "grasp": _pose(0.01), "retreat": _pose(0.10)}
+    for pose in poses.values():
+        pose["orientation"] = {"x": 1.0, "y": 0.0, "z": 0.0, "w": 0.0}
+
+    adjusted = safety.apply_grasp_contact_backoff(poses, gripper_width_m=0.020)
+
+    assert adjusted["grasp"]["position"]["z"] == pytest.approx(0.026)
