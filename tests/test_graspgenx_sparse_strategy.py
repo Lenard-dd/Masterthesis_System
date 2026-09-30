@@ -86,6 +86,24 @@ def test_moveit_screen_keeps_sparse_candidates_even_when_diffusion_scores_higher
     assert sum(item in diffusion for item in selected) == 4
 
 
+def test_moveit_screen_preserves_environment_selected_diverse_order():
+    candidates = [
+        {
+            "candidate_id": f"safe_{index}",
+            "score": score,
+            "metadata": {
+                "generation_branch": "obb_sparse",
+                "environment_constrained_trajectory": True,
+            },
+        }
+        for index, score in enumerate((0.40, 0.99, 0.60))
+    ]
+
+    selected = screen_candidate_order(candidates, max_candidates=3, sparse_quota=1)
+
+    assert [item["candidate_id"] for item in selected] == ["safe_0", "safe_1", "safe_2"]
+
+
 def test_sparse_adapter_requests_sparse_action_without_changing_diffusion_defaults():
     sparse = GraspGenXSubprocessAdapter({"strategy": "sparse", "sparse_quota": 8})
     legacy = GraspGenXSubprocessAdapter({"strategy": "diffusion"})
@@ -104,6 +122,59 @@ def _script(name):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_scene_collision_filter_rejects_closed_finger_surface_collision():
+    runner = _script("graspgenx_zmq_runner")
+    poses = np.repeat(np.eye(4, dtype=np.float32)[None], 2, axis=0)
+    poses[1, 0, 3] = 1.0
+    scene = np.array([[0.0, 0.0, 0.0]], dtype=np.float32)
+    closed_surface = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.01]], dtype=np.float32)
+
+    mask = runner.filter_grasps_against_closed_surface(
+        scene,
+        poses,
+        closed_surface,
+        collision_threshold=0.006,
+        surface_samples=2,
+        backoff_m=0.0,
+    )
+
+    assert mask.tolist() == [False, True]
+
+
+def test_target_residual_cleanup_keeps_lower_support_surface():
+    runner = _script("graspgenx_zmq_runner")
+    target = np.array([
+        [x, y, z]
+        for x in (-0.01, 0.0, 0.01)
+        for y in (-0.01, 0.0, 0.01)
+        for z in (0.010, 0.012)
+    ], dtype=np.float32)
+    environment = np.array([
+        [0.0, 0.0, 0.000],   # support below the target
+        [0.0, 0.0, 0.011],   # leaked target edge
+        [0.05, 0.05, 0.020], # unrelated scene point
+    ], dtype=np.float32)
+
+    cleaned, removed = runner.remove_target_residuals(environment, target)
+
+    assert removed == 1
+    assert np.allclose(cleaned, [
+        [0.0, 0.0, 0.0],
+        [0.05, 0.05, 0.02],
+    ])
+
+
+def test_static_collision_pose_uses_the_executed_grasp_backoff():
+    runner = _script("graspgenx_zmq_runner")
+    pose = np.eye(4, dtype=np.float32)[None]
+    pose[0, :3, 2] = [0.0, 0.0, -1.0]
+
+    adjusted = runner.apply_grasp_backoff(pose, 0.04)
+
+    assert adjusted[0, :3, 3].tolist() == pytest.approx([0.0, 0.0, 0.04])
+    assert pose[0, :3, 3].tolist() == [0.0, 0.0, 0.0]
 
 
 @pytest.mark.parametrize("supported", [True, False])
@@ -175,7 +246,7 @@ def test_rotated_camera_cloud_is_localized_in_base_only_once(tmp_path):
     assert localize_graspgenx_candidate(localized, metadata) == localized
 
 
-def test_extended_server_reserves_sparse_slots_and_delegates_legacy_actions(monkeypatch):
+def test_extended_server_returns_all_sparse_yaws_before_environment_filter(monkeypatch):
     server_script = _script("graspgenx_sparse_server")
     instances = []
     calls = []
@@ -223,5 +294,90 @@ def test_extended_server_reserves_sparse_slots_and_delegates_legacy_actions(monk
         "topk_num_grasps": 4, "sparse_quota": 2,
     })
     assert calls[0]["obb_density"] == "sparse"
-    assert result["sources"] == ["obb_sparse", "obb_sparse", "diffusion", "diffusion"]
-    assert result["confidences"] == pytest.approx([0.5, 0.4, 0.99, 0.98])
+    assert result["sources"] == ["obb_sparse", "obb_sparse", "obb_sparse", "diffusion"]
+    assert result["confidences"] == pytest.approx([0.5, 0.4, 0.3, 0.99])
+
+
+def test_yaw_diversity_is_applied_after_scene_filtering():
+    runner = _script("graspgenx_zmq_runner")
+    poses = []
+    scores = []
+    for yaw_deg, score in ((1, .99), (2, .98), (3, .97), (45, .90), (90, .80)):
+        yaw = np.deg2rad(yaw_deg)
+        pose = np.eye(4, dtype=np.float32)
+        pose[:2, 0] = [np.cos(yaw), np.sin(yaw)]
+        pose[:2, 1] = [-np.sin(yaw), np.cos(yaw)]
+        poses.append(pose)
+        scores.append(score)
+
+    selected = runner.select_yaw_diverse_candidates(
+        poses, scores, maximum=3, yaw_bin_deg=15.0, max_per_bin=1,
+    )
+
+    # The third near-duplicate has a higher object-only score than the 45/90
+    # degree alternatives, but diversity preserves scene-dependent directions.
+    assert selected == [0, 3, 4]
+
+
+def test_environment_constraint_search_returns_contact_preserving_trajectory():
+    runner = _script("graspgenx_zmq_runner")
+    pose = np.eye(4, dtype=np.float32)
+    pose[2, 2] = -1.0
+    pose[2, 3] = 0.20
+    target = np.array([
+        [x, y, z]
+        for x in (-0.005, 0.0, 0.005)
+        for y in (-0.003, 0.0, 0.003)
+        for z in (-0.002, 0.0, 0.002)
+    ], dtype=np.float32)
+
+    class Gripper:
+        collision_mesh = object()
+        open_pointcloud = np.array([[0.1, 0.1, 0.1]], dtype=np.float32)
+        close_pointcloud = np.array([[0.1, 0.1, 0.1]], dtype=np.float32)
+        grasp_volume = np.array([[-0.02, -0.02, 0.14], [0.02, 0.02, 0.25]], dtype=np.float32)
+
+    result = runner.constrain_grasps_to_environment(
+        lambda **kwargs: np.ones(len(kwargs["grasp_poses"]), dtype=bool),
+        np.array([[2.0, 2.0, 2.0]], dtype=np.float32),
+        target,
+        pose[None],
+        Gripper(),
+        static_threshold=0.006,
+        static_samples=10,
+        static_batch_size=1,
+        closed_threshold=0.004,
+        closed_samples=10,
+        closed_enabled=True,
+        min_backoff_m=0.025,
+        max_backoff_m=0.040,
+        backoff_step_m=0.005,
+        min_target_contact_points=12,
+        pregrasp_distance_m=0.060,
+        retreat_distance_m=0.100,
+        path_samples=3,
+        path_surface_samples=10,
+    )
+
+    assert result["mask"].tolist() == [True]
+    assert result["selected_backoffs_m"][0] == pytest.approx(0.025)
+    trajectory = result["trajectory_specs"][0]
+    assert trajectory["target_contact_point_count"] == len(target)
+    assert trajectory["grasp_transform"][2][3] == pytest.approx(0.225)
+    assert trajectory["pregrasp_transform"][2][3] == pytest.approx(0.285)
+    assert trajectory["retreat_transform"][2][3] == pytest.approx(0.325)
+
+
+def test_candidate_schema_carries_dynamic_backoff_and_trajectory():
+    runner = _script("graspgenx_zmq_runner")
+    pose = np.eye(4, dtype=np.float32)
+    spec = {"execution_backoff_m": 0.03, "target_contact_point_count": 25}
+
+    candidate = runner.make_candidates(
+        pose[None], [0.8], "robotiq_2f_140", None,
+        execution_backoffs_m=[0.03], trajectory_specs=[spec],
+    )[0]
+
+    assert candidate["execution_backoff_m"] == pytest.approx(0.03)
+    assert candidate["trajectory"] == spec
+    assert candidate["metadata"]["environment_constrained_trajectory"] is True

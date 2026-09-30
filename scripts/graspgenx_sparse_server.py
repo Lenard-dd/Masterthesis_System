@@ -50,7 +50,11 @@ def main():
             sparse_quota = int(request.get("sparse_quota", 24))
             if num_grasps < 1 or topk < 1 or sparse_quota < 1:
                 raise ValueError("num_grasps, topk_num_grasps and sparse_quota must be positive")
-            sparse_quota = min(sparse_quota, topk)
+            # sparse_quota is the desired *final* sparse result count. Do not
+            # apply it before the client has checked the scene: object-only
+            # ranking can otherwise discard the only yaw that fits nearby
+            # free space. Return every OBB yaw and let the environment-aware
+            # runner select a diverse safe subset.
             sampler = self._get_sampler(gripper_name)
             started = time.monotonic()
             result = run_graspmoe(
@@ -62,7 +66,7 @@ def main():
                 z_offsets_cm=tuple(float(x) for x in request.get("moe_z_offsets_cm", [0.0])),
                 obb_density="sparse",
             )
-            obb_order = np.argsort(result["scores_obb"])[::-1][:sparse_quota]
+            obb_order = np.argsort(result["scores_obb"])[::-1]
             diff_order = np.argsort(result["scores_diff"])[::-1][:max(0, topk - len(obb_order))]
             grasps = np.concatenate(
                 [result["grasps_obb"][obb_order], result["grasps_diff"][diff_order]], axis=0

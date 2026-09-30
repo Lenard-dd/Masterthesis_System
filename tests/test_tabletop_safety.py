@@ -325,3 +325,64 @@ def test_narrow_only_hard_reject_keeps_wider_candidate_capped():
     adjusted = safety.apply_grasp_contact_backoff(poses, gripper_width_m=0.020)
 
     assert adjusted["grasp"]["position"]["z"] == pytest.approx(0.026)
+
+
+def test_candidate_specific_backoff_overrides_global_distance():
+    safety = TabletopSafety(grasp_contact_backoff_m=0.04)
+    poses = {
+        "pregrasp": {"frame": "base_link", "position": {"x": 0.0, "y": 0.0, "z": 0.2}, "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}},
+        "grasp": {"frame": "base_link", "position": {"x": 0.0, "y": 0.0, "z": 0.1}, "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}},
+        "retreat": {"frame": "base_link", "position": {"x": 0.0, "y": 0.0, "z": 0.3}, "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}},
+    }
+
+    adjusted = safety.apply_grasp_contact_backoff(poses, backoff_m=0.025)
+
+    assert adjusted["grasp"]["position"]["z"] == pytest.approx(0.125)
+    assert adjusted["retreat"]["position"]["z"] == pytest.approx(0.325)
+
+
+def test_environment_selected_backoff_does_not_stack_global_table_auto_lift():
+    safety = TabletopSafety.from_config({
+        "tabletop_safety": {
+            "enabled": True,
+            "frame": "base_link",
+            "plane": {"normal": {"x": 0, "y": 0, "z": 1}, "d": 0},
+            "grasp_contact_backoff_m": 0.040,
+            "collision_margin_m": 0.008,
+            "clearance": {"grasp_m": 0.005},
+            "finger_axial_close_sweep_m": 0.025,
+            "narrow_grasp_clearance_tiers": [
+                {"max_width_m": 0.015, "extra_clearance_m": 0.012},
+            ],
+        }
+    })
+    poses = {
+        "pregrasp": _pose(0.10),
+        "grasp": _pose(0.010),
+        "retreat": _pose(0.10),
+    }
+
+    adjusted = safety.apply_grasp_contact_backoff(
+        poses, gripper_width_m=0.010, backoff_m=0.040,
+    )
+
+    # The environment-selected 40 mm correction is the final correction. The
+    # global tabletop heuristic must not add a second narrow-object lift.
+    assert adjusted["grasp"]["position"]["z"] == pytest.approx(0.050)
+    assert adjusted["retreat"]["position"]["z"] == pytest.approx(0.140)
+
+
+def test_screened_environment_trajectory_is_not_backed_off_twice():
+    safety = TabletopSafety(grasp_contact_backoff_m=0.04)
+    poses = {
+        "pregrasp": _pose(z=0.20),
+        "grasp": _pose(z=0.14),
+        "retreat": _pose(z=0.24),
+        "_execution_backoff_applied": True,
+        "_trajectory_source": "graspgenx_environment_screened",
+    }
+
+    adjusted = safety.apply_grasp_contact_backoff(poses, backoff_m=0.04)
+
+    assert adjusted["grasp"]["position"]["z"] == pytest.approx(0.14)
+    assert adjusted["retreat"]["position"]["z"] == pytest.approx(0.24)

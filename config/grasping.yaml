@@ -19,6 +19,18 @@ grasping:
     min_depth_m: 0.05
     max_depth_m: 2.0
     max_points: 50000
+    # Save the same aligned RGB-D frame as a full cloud and as an environment
+    # cloud with the selected SAM3 target removed. GraspGenX generates from the
+    # target cloud and collision-filters against the environment cloud.
+    scene_cloud_enabled: true
+    scene_max_points: 30000
+    # Keep nearby support-surface points for small parts. A wide dilation made
+    # elevated platforms disappear from the environment cloud.
+    scene_target_mask_dilation_px: 1
+    # Fill the support plane hidden by the selected object's mask. This avoids
+    # an object-shaped false free-space hole in a single-view depth cloud.
+    scene_support_completion_enabled: true
+    scene_support_max_points: 3000
     # Estimate thickness from a local tabletop plane around the SAM3 mask.
     # The estimate is accepted only when RANSAC finds a stable enough plane.
     table_plane_enabled: true
@@ -57,8 +69,58 @@ grasping:
     topk_num_grasps: 100
     timeout_ms: 60000
     estimate_gripper_width: true
-    width_axis_index: 1
+    # GraspGenX robotiq_2f_140 grasp_volume opens along local X.
+    width_axis_index: 0
     width_clearance_m: 0.01
+    # Official GraspGenX gripper-mesh filtering against the D435i environment
+    # cloud. Existing tabletop-envelope and MoveIt checks remain active.
+    scene_collision_enabled: true
+    scene_collision_threshold_m: 0.006
+    scene_collision_samples: 2500
+    scene_collision_batch_size: 4
+    # In addition to GraspGenX's static/open collision mesh, check the actual
+    # closed Robotiq surface point cloud at the same candidate pose. This
+    # covers the changed fingertip location without translating the palm.
+    scene_collision_closed_finger_enabled: true
+    scene_collision_closed_finger_samples: 3500
+    # Use 8 mm for discrete non-planar scene points. The independently
+    # estimated local support plane keeps its stricter 10 mm clearance below,
+    # avoiding a 10 mm point-cloud threshold cliff from D435i sampling noise.
+    scene_collision_closed_finger_threshold_m: 0.008
+    # Retained for the legacy one-pose collision path. Constrained generation
+    # below searches the final backoff per candidate.
+    scene_collision_closed_finger_backoff_m: 0.040
+    environment_constrained_generation:
+      enabled: true
+      min_backoff_m: 0.025
+      max_backoff_m: 0.045
+      # Finer insertion-depth search reduces quantization error without another
+      # model inference; 2.5 mm gives nine trials across the calibrated range.
+      backoff_step_m: 0.0025
+      min_target_contact_points: 12
+      min_target_contact_fraction: 0.20
+      # Require target evidence in the distal finger-pad slice, rather than
+      # anywhere inside the broad nominal grasp volume.
+      pad_contact_depth_m: 0.045
+      # Estimate the closest horizontal support from the local scene cloud and
+      # analytically check the closed gripper surface against that plane.
+      support_plane_enabled: true
+      support_plane_margin_m: 0.012
+      support_plane_clearance_m: 0.010
+      support_plane_inlier_threshold_m: 0.003
+      support_plane_max_tilt_deg: 20.0
+      support_plane_min_inliers: 24
+      pregrasp_distance_m: 0.060
+      retreat_distance_m: 0.100
+      path_samples: 5
+      path_surface_samples: 1800
+      # Apply the 24-candidate limit only after environment checks. Preserve
+      # alternatives across planar yaw instead of returning many near-duplicates.
+      yaw_bin_deg: 15.0
+      max_per_yaw_bin: 2
+    # Scene collision is a safety requirement in this mode. Stop instead of
+    # silently returning object-only candidates when the API/assets fail.
+    scene_collision_fallback_to_object_only: false
     # On small GPUs, run SAM3 detection first, then start/confirm the
     # GraspGenX server before candidate generation to avoid VRAM contention.
     require_server_confirmation: true
@@ -147,9 +209,13 @@ grasping:
     #   /home/lenard/dev_ws/src/ur_src/ros2_robotiq_gripper/robotiq_description/urdf/robotiq_2f_140_macro.urdf.xacro
     #     camera_mount -> robotiq base: xyz="0 0 0", rpy="0 0 pi/2"
     #
-    # Therefore this config applies the inverse transform, from GraspGenX /
-    # Robotiq gripper frame back to MoveIt's tool0 target frame.
+    # GraspGenX models jaw opening along local X, while the ROS Robotiq model
+    # opens along robotiq_140_base_link local Y. The URDF's +90-degree fixed
+    # joint maps that Y axis onto tool0 -X, which is the same undirected jaw
+    # axis as GraspGenX +X. Therefore grasp and tool0 share planar orientation;
+    # applying an additional -90 degrees would rotate the real jaws away from
+    # the collision-checked direction. Only the 4 mm axial offset is inverted.
     grasp_frame_to_ee_frame:
       enabled: true
       translation_m: [0.0, 0.0, -0.004]
-      rotation_rpy_rad: [0.0, 0.0, -1.57079632679]
+      rotation_rpy_rad: [0.0, 0.0, 0.0]

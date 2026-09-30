@@ -15,6 +15,11 @@ class ObjectPointCloudBuilder:
         "min_depth_m": 0.05,
         "max_depth_m": 2.0,
         "max_points": 50000,
+        "scene_cloud_enabled": True,
+        "scene_max_points": 30000,
+        "scene_target_mask_dilation_px": 1,
+        "scene_support_completion_enabled": True,
+        "scene_support_max_points": 3000,
         # Robust AABB bounds suppress isolated depth outliers at mask edges.
         "extent_percentile_low": 2.0,
         "extent_percentile_high": 98.0,
@@ -113,6 +118,58 @@ class ObjectPointCloudBuilder:
             output_dir.mkdir(parents=True, exist_ok=True)
             output_path = output_dir / f"{self._safe_stem(object_id)}.ply"
             self._write_ascii_ply(output_path, points)
+            scene_path = None
+            environment_path = None
+            scene_count = 0
+            environment_count = 0
+            if bool(self.config.get("scene_cloud_enabled", True)):
+                scene_valid = (
+                    np.isfinite(depth_m)
+                    & (depth_m >= float(self.config["min_depth_m"]))
+                    & (depth_m <= float(self.config["max_depth_m"]))
+                )
+                scene_rows, scene_cols = np.nonzero(scene_valid)
+                scene_rows, scene_cols = self._bounded_sample_indices(
+                    scene_rows, scene_cols, int(self.config["scene_max_points"]), np
+                )
+                scene_points = self._backproject(
+                    scene_rows, scene_cols, depth_m, fx, fy, cx, cy, np
+                )
+                dilated_mask = self._dilate_mask(
+                    mask, int(self.config.get("scene_target_mask_dilation_px", 1)), np
+                )
+                env_rows, env_cols = np.nonzero(scene_valid & ~dilated_mask)
+                env_rows, env_cols = self._bounded_sample_indices(
+                    env_rows, env_cols, int(self.config["scene_max_points"]), np
+                )
+                environment_points = self._backproject(
+                    env_rows, env_cols, depth_m, fx, fy, cx, cy, np
+                )
+                support_points = self._complete_support_surface(
+                    mask=mask,
+                    height_estimation=height_estimation,
+                    fx=fx,
+                    fy=fy,
+                    cx=cx,
+                    cy=cy,
+                    np_module=np,
+                )
+                if support_points.shape[0]:
+                    environment_points = np.vstack((environment_points, support_points))
+                    if environment_points.shape[0] > int(self.config["scene_max_points"]):
+                        indices = np.linspace(
+                            0,
+                            environment_points.shape[0] - 1,
+                            int(self.config["scene_max_points"]),
+                            dtype=int,
+                        )
+                        environment_points = environment_points[indices]
+                scene_path = output_dir / f"{self._safe_stem(object_id)}_scene.ply"
+                environment_path = output_dir / f"{self._safe_stem(object_id)}_environment.ply"
+                self._write_ascii_ply(scene_path, scene_points)
+                self._write_ascii_ply(environment_path, environment_points)
+                scene_count = int(scene_points.shape[0])
+                environment_count = int(environment_points.shape[0])
         except Exception as exc:
             return self._result("FAILED", f"Failed to build object point cloud: {exc}")
 
@@ -121,6 +178,14 @@ class ObjectPointCloudBuilder:
             "status": "SUCCESS",
             "message": f"Saved object point cloud to {output_path}.",
             "point_cloud_path": str(output_path),
+            "scene_point_cloud_path": str(scene_path) if scene_path else None,
+            "environment_point_cloud_path": str(environment_path) if environment_path else None,
+            "scene_num_points": scene_count,
+            "environment_num_points": environment_count,
+            "scene_target_mask_dilation_px": int(self.config.get("scene_target_mask_dilation_px", 1)),
+            "scene_support_completion_num_points": int(
+                locals().get("support_points", np.empty((0, 3))).shape[0]
+            ),
             "num_points": int(points.shape[0]),
             "frame": frame or self._frame_id(camera_info),
             "centroid_m": {
@@ -187,6 +252,29 @@ class ObjectPointCloudBuilder:
             handle.write("property float x\nproperty float y\nproperty float z\nend_header\n")
             for x, y, z in points:
                 handle.write(f"{float(x):.8f} {float(y):.8f} {float(z):.8f}\n")
+
+    @staticmethod
+    def _bounded_sample_indices(rows, cols, maximum: int, np_module):
+        if maximum > 0 and rows.size > maximum:
+            indices = np_module.linspace(0, rows.size - 1, maximum, dtype=int)
+            return rows[indices], cols[indices]
+        return rows, cols
+
+    @staticmethod
+    def _dilate_mask(mask, radius_px: int, np_module):
+        radius = max(0, int(radius_px))
+        if radius == 0:
+            return mask.astype(bool)
+        padded = np_module.pad(mask.astype(bool), radius, mode="constant")
+        result = np_module.zeros_like(mask, dtype=bool)
+        height, width = mask.shape
+        for row_offset in range(2 * radius + 1):
+            for col_offset in range(2 * radius + 1):
+                result |= padded[
+                    row_offset:row_offset + height,
+                    col_offset:col_offset + width,
+                ]
+        return result
 
     @staticmethod
     def _planar_principal_axes(points) -> list[dict[str, float]]:
@@ -316,7 +404,49 @@ class ObjectPointCloudBuilder:
             "table_point_count": int(table_points.shape[0]),
             "object_point_count": int(object_points.shape[0]),
             "reason": None if usable else "height_or_plane_quality_out_of_range",
+            "plane_normal": [float(value) for value in normal],
+            "plane_offset": float(offset),
         }
+
+    def _complete_support_surface(
+        self,
+        *,
+        mask,
+        height_estimation: dict[str, Any],
+        fx: float,
+        fy: float,
+        cx: float,
+        cy: float,
+        np_module,
+    ):
+        """Fill the support plane hidden by the target mask."""
+        empty = np_module.empty((0, 3), dtype=float)
+        if not bool(self.config.get("scene_support_completion_enabled", True)):
+            return empty
+        if not bool(height_estimation.get("usable", False)):
+            return empty
+        normal = np_module.asarray(height_estimation.get("plane_normal", []), dtype=float)
+        if normal.shape != (3,):
+            return empty
+        offset = float(height_estimation.get("plane_offset", float("nan")))
+        if not np_module.isfinite(offset):
+            return empty
+        rows, cols = np_module.nonzero(mask)
+        maximum = max(0, int(self.config.get("scene_support_max_points", 3000)))
+        rows, cols = self._bounded_sample_indices(rows, cols, maximum, np_module)
+        if rows.size == 0:
+            return empty
+        rays = np_module.column_stack(
+            ((cols - cx) / fx, (rows - cy) / fy, np_module.ones(rows.size))
+        )
+        denominators = rays @ normal
+        valid = np_module.abs(denominators) > 1e-9
+        depths = np_module.full(rows.size, np_module.nan, dtype=float)
+        depths[valid] = -offset / denominators[valid]
+        valid &= np_module.isfinite(depths)
+        valid &= depths >= float(self.config["min_depth_m"])
+        valid &= depths <= float(self.config["max_depth_m"])
+        return rays[valid] * depths[valid, None]
 
     @staticmethod
     def _backproject(rows, cols, depth_m, fx, fy, cx, cy, np_module):

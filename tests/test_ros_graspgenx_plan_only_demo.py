@@ -806,3 +806,40 @@ def test_grasp_frame_to_ee_transform_composes_orientation():
     assert transformed["grasp"]["orientation"] == pytest.approx(
         {"x": 0.0, "y": 0.0, "z": math.sqrt(0.5), "w": math.sqrt(0.5)}
     )
+
+
+def test_prepare_candidate_preview_uses_screened_environment_trajectory():
+    def matrix(z):
+        return [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, z],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+
+    candidate = {
+        **FAKE_CANDIDATE,
+        "trajectory": {
+            "frame": "object_point_cloud",
+            "pregrasp_transform": matrix(0.10),
+            "grasp_transform": matrix(0.04),
+            "retreat_transform": matrix(0.14),
+            "execution_backoff_m": 0.04,
+        },
+    }
+    poses = prepare_candidate_preview(
+        candidate,
+        point_cloud={
+            "frame": "base_link",
+            "centroid_m": {"x": 0.2, "y": -0.1, "z": 0.3},
+        },
+        preview_config={"retreat_vector_frame": "target_frame", "retreat_distance_m": 0.5},
+        target_frame="base_link",
+        transformer=None,
+    )
+
+    assert poses["pregrasp"]["position"]["z"] == pytest.approx(0.40)
+    assert poses["grasp"]["position"]["z"] == pytest.approx(0.34)
+    assert poses["retreat"]["position"]["z"] == pytest.approx(0.44)
+    assert poses["_execution_backoff_applied"] is True
+    assert poses["_trajectory_source"] == "graspgenx_environment_screened"

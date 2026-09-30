@@ -26,12 +26,42 @@ class GraspGenXSubprocessAdapter:
         "topk_num_grasps": 100,
         "timeout_ms": 60000,
         "estimate_gripper_width": True,
-        "width_axis_index": 1,
+        "width_axis_index": 0,
         "width_clearance_m": 0.01,
         "strategy": "diffusion",
         "sparse_quota": 24,
         "moe_num_yaws": 36,
         "moe_z_offsets_cm": "0",
+        "scene_collision_enabled": True,
+        "scene_collision_threshold_m": 0.006,
+        "scene_collision_samples": 2500,
+        "scene_collision_batch_size": 4,
+        "scene_collision_closed_finger_enabled": True,
+        "scene_collision_closed_finger_samples": 3500,
+        "scene_collision_closed_finger_threshold_m": 0.008,
+        "scene_collision_closed_finger_backoff_m": 0.040,
+        "environment_constrained_generation": {
+            "enabled": True,
+            "min_backoff_m": 0.025,
+            "max_backoff_m": 0.045,
+            "backoff_step_m": 0.0025,
+            "min_target_contact_points": 12,
+            "min_target_contact_fraction": 0.20,
+            "pad_contact_depth_m": 0.045,
+            "support_plane_enabled": True,
+            "support_plane_margin_m": 0.012,
+            "support_plane_clearance_m": 0.010,
+            "support_plane_inlier_threshold_m": 0.003,
+            "support_plane_max_tilt_deg": 20.0,
+            "support_plane_min_inliers": 24,
+            "pregrasp_distance_m": 0.060,
+            "retreat_distance_m": 0.100,
+            "path_samples": 5,
+            "path_surface_samples": 1800,
+            "yaw_bin_deg": 15.0,
+            "max_per_yaw_bin": 2,
+        },
+        "scene_collision_fallback_to_object_only": False,
     }
 
     def __init__(self, config: dict | None = None):
@@ -40,7 +70,10 @@ class GraspGenXSubprocessAdapter:
             config = config.get("graspgenx_subprocess") or {}
         self.config = {**self.DEFAULT_CONFIG, **config}
 
-    def generate_candidates(self, point_cloud_path: str, *, strategy: str | None = None) -> dict:
+    def generate_candidates(
+        self, point_cloud_path: str, *, strategy: str | None = None,
+        scene_point_cloud_path: str | None = None,
+    ) -> dict:
         if not self.config.get("enabled", True):
             return self._result("NOT_AVAILABLE", "GraspGenX subprocess is disabled.")
         runner = self._runner_path()
@@ -51,7 +84,14 @@ class GraspGenXSubprocessAdapter:
         if not Path(point_cloud_path).is_file():
             return self._result("FAILED", f"Point cloud does not exist: {point_cloud_path}")
 
-        command = self._build_command(point_cloud_path, runner, strategy=strategy)
+        if scene_point_cloud_path and not Path(scene_point_cloud_path).is_file():
+            return self._result(
+                "FAILED", f"Scene point cloud does not exist: {scene_point_cloud_path}"
+            )
+        command = self._build_command(
+            point_cloud_path, runner, strategy=strategy,
+            scene_point_cloud_path=scene_point_cloud_path,
+        )
         try:
             completed = subprocess.run(
                 command,
@@ -77,7 +117,10 @@ class GraspGenXSubprocessAdapter:
             return self._result("FAILED", f"GraspGenX runner did not return valid JSON.{suffix}")
         return self._normalize(value)
 
-    def _build_command(self, point_cloud_path: str, runner: Path | None = None, *, strategy: str | None = None) -> list[str]:
+    def _build_command(
+        self, point_cloud_path: str, runner: Path | None = None, *,
+        strategy: str | None = None, scene_point_cloud_path: str | None = None,
+    ) -> list[str]:
         runner = runner or self._runner_path()
         command = [
             str(self.config["conda_executable"]), "run", "-n",
@@ -109,6 +152,53 @@ class GraspGenXSubprocessAdapter:
         default_width = self.config.get("default_gripper_width_m")
         if default_width is not None:
             command.extend(["--default-gripper-width-m", str(float(default_width))])
+        if bool(self.config.get("scene_collision_enabled", True)) and scene_point_cloud_path:
+            constrained = self.config.get("environment_constrained_generation", {}) or {}
+            command.extend([
+                "--scene-point-cloud", scene_point_cloud_path,
+                "--collision-threshold-m", str(float(self.config["scene_collision_threshold_m"])),
+                "--collision-samples", str(int(self.config["scene_collision_samples"])),
+                "--collision-batch-size", str(int(self.config["scene_collision_batch_size"])),
+                "--collision-closed-finger-samples", str(int(self.config["scene_collision_closed_finger_samples"])),
+                "--collision-closed-finger-threshold-m", str(float(self.config["scene_collision_closed_finger_threshold_m"])),
+                "--collision-closed-finger-backoff-m", str(float(self.config["scene_collision_closed_finger_backoff_m"])),
+                "--constraint-min-backoff-m", str(float(constrained.get("min_backoff_m", 0.025))),
+                "--constraint-max-backoff-m", str(float(constrained.get("max_backoff_m", 0.045))),
+                "--constraint-backoff-step-m", str(float(constrained.get("backoff_step_m", 0.0025))),
+                "--constraint-min-target-contact-points", str(int(constrained.get("min_target_contact_points", 12))),
+                "--constraint-min-target-contact-fraction", str(float(constrained.get("min_target_contact_fraction", 0.20))),
+                "--constraint-pad-contact-depth-m", str(float(constrained.get("pad_contact_depth_m", 0.045))),
+                "--constraint-support-plane-margin-m", str(float(constrained.get("support_plane_margin_m", 0.012))),
+                "--constraint-support-plane-clearance-m", str(float(constrained.get("support_plane_clearance_m", 0.010))),
+                "--constraint-support-plane-inlier-threshold-m", str(float(constrained.get("support_plane_inlier_threshold_m", 0.003))),
+                "--constraint-support-plane-max-tilt-deg", str(float(constrained.get("support_plane_max_tilt_deg", 20.0))),
+                "--constraint-support-plane-min-inliers", str(int(constrained.get("support_plane_min_inliers", 24))),
+                "--constraint-pregrasp-distance-m", str(float(constrained.get("pregrasp_distance_m", 0.060))),
+                "--constraint-retreat-distance-m", str(float(constrained.get("retreat_distance_m", 0.100))),
+                "--constraint-path-samples", str(int(constrained.get("path_samples", 5))),
+                "--constraint-path-surface-samples", str(int(constrained.get("path_surface_samples", 1800))),
+                "--constraint-yaw-bin-deg", str(float(constrained.get("yaw_bin_deg", 15.0))),
+                "--constraint-max-per-yaw-bin", str(int(constrained.get("max_per_yaw_bin", 2))),
+            ])
+            command.append(
+                "--environment-constrained-generation"
+                if bool(constrained.get("enabled", True))
+                else "--no-environment-constrained-generation"
+            )
+            command.append(
+                "--constraint-support-plane-enabled"
+                if bool(constrained.get("support_plane_enabled", True))
+                else "--no-constraint-support-plane-enabled"
+            )
+            command.append(
+                "--collision-closed-finger-enabled"
+                if bool(self.config.get("scene_collision_closed_finger_enabled", True))
+                else "--no-collision-closed-finger-enabled"
+            )
+            if bool(self.config.get("scene_collision_fallback_to_object_only", False)):
+                command.append("--collision-fallback-to-object-only")
+            else:
+                command.append("--no-collision-fallback-to-object-only")
         return command
 
     def _runner_path(self) -> Path | None:

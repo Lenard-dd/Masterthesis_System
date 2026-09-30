@@ -270,6 +270,41 @@ def describe_grasp_frame_to_ee_transform(config: dict | None = None) -> str:
     )
 
 
+def _environment_trajectory_poses(candidate: Any, point_cloud: dict) -> dict[str, dict] | None:
+    trajectory = _candidate_value(candidate, "trajectory", None)
+    if not isinstance(trajectory, dict):
+        return None
+    names = {
+        "pregrasp": "pregrasp_transform",
+        "grasp": "grasp_transform",
+        "retreat": "retreat_transform",
+    }
+    if not all(_is_transform_matrix(trajectory.get(key)) for key in names.values()):
+        return None
+    source_frame = str(trajectory.get("frame") or _candidate_value(candidate, "pose_frame", ""))
+    output_frame = source_frame
+    offset = (0.0, 0.0, 0.0)
+    if source_frame == "object_point_cloud":
+        centroid = point_cloud.get("centroid_m")
+        if not isinstance(centroid, dict) or not point_cloud.get("frame"):
+            raise ValueError("Environment trajectory requires the object-cloud centroid and frame.")
+        offset = tuple(float(centroid[axis]) for axis in ("x", "y", "z"))
+        output_frame = str(point_cloud["frame"])
+    poses: dict[str, dict] = {}
+    for name, key in names.items():
+        matrix = trajectory[key]
+        poses[name] = {
+            "frame": output_frame,
+            "position": {
+                "x": float(matrix[0][3]) + offset[0],
+                "y": float(matrix[1][3]) + offset[1],
+                "z": float(matrix[2][3]) + offset[2],
+            },
+            "orientation": _matrix_to_quaternion(matrix),
+        }
+    return poses
+
+
 def prepare_candidate_preview(
     candidate: Any,
     point_cloud: dict,
@@ -279,12 +314,15 @@ def prepare_candidate_preview(
 ) -> dict:
     """Build localized, TF-transformed MoveIt EE preview poses for a candidate."""
     preview_config = preview_config or {}
-    localized = localize_graspgenx_candidate(candidate, point_cloud)
-    poses = create_preview_poses(
-        localized,
-        preview_config,
-        fallback_frame=point_cloud.get("frame") or target_frame or "base_link",
-    )
+    poses = _environment_trajectory_poses(candidate, point_cloud)
+    uses_environment_trajectory = poses is not None
+    if poses is None:
+        localized = localize_graspgenx_candidate(candidate, point_cloud)
+        poses = create_preview_poses(
+            localized,
+            preview_config,
+            fallback_frame=point_cloud.get("frame") or target_frame or "base_link",
+        )
     if target_frame:
         transformed_poses = transform_pose_sequence_to_target(
             poses, transformer, target_frame
@@ -299,16 +337,23 @@ def prepare_candidate_preview(
         poses,
         preview_config.get("grasp_frame_to_ee_frame", {}),
     )
-    if str(preview_config.get("retreat_vector_frame", "pose_frame")).lower() in {
-        "target_frame",
-        "base_link",
-    }:
+    if (
+        not uses_environment_trajectory
+        and str(preview_config.get("retreat_vector_frame", "pose_frame")).lower() in {
+            "target_frame",
+            "base_link",
+        }
+    ):
         retreat_vector = _normalized_vector(
             preview_config.get("retreat_vector", [0.0, 0.0, 1.0])
         )
         retreat_distance = float(preview_config.get("retreat_distance_m", 0.10))
         poses = dict(poses)
         poses["retreat"] = _offset_pose(poses["grasp"], retreat_vector, retreat_distance)
+    if uses_environment_trajectory:
+        poses = dict(poses)
+        poses["_trajectory_source"] = "graspgenx_environment_screened"
+        poses["_execution_backoff_applied"] = True
     return poses
 
 

@@ -152,7 +152,8 @@ class TabletopSafety:
         )
 
     def apply_grasp_contact_backoff(
-        self, poses: dict[str, Any], *, gripper_width_m: float | None = None
+        self, poses: dict[str, Any], *, gripper_width_m: float | None = None,
+        backoff_m: float | None = None,
     ) -> dict[str, Any]:
         """Move final grasp and retreat back along the gripper approach axis.
 
@@ -160,15 +161,32 @@ class TabletopSafety:
         little earlier on the same approach line. Retreat receives the same
         translation to preserve its displacement from the adjusted final grasp.
         """
-        if self.grasp_contact_backoff_m < 0.0:
+        # Environment-constrained candidates already carry the exact screened
+        # pregrasp/grasp/retreat transforms. Reapplying their scalar backoff in
+        # the GUI would make preview and execution differ from generation.
+        if poses.get("_execution_backoff_applied") is True:
+            return poses
+        distance = self.grasp_contact_backoff_m if backoff_m is None else _as_float(
+            backoff_m, "backoff_m"
+        )
+        if distance < 0.0:
             raise ValueError("grasp_contact_backoff_m must be non-negative.")
-        if self.grasp_contact_backoff_m <= 0.0:
+        if distance <= 0.0:
             adjusted = poses
         else:
-            adjusted = self._apply_approach_backoff(poses)
+            adjusted = self._apply_approach_backoff(poses, distance)
+        # An explicit per-candidate backoff comes from GraspGenX environment
+        # screening, which already checked the open/closed gripper and motion
+        # path against the scene cloud. Applying the global-table auto-lift as
+        # well can move thin objects out of the finger contact region. Keep the
+        # global plane validator as a hard gate, but do not stack another lift.
+        if backoff_m is not None:
+            return adjusted
         return self._apply_minimum_table_clearance(adjusted, gripper_width_m)
 
-    def _apply_approach_backoff(self, poses: dict[str, Any]) -> dict[str, Any]:
+    def _apply_approach_backoff(
+        self, poses: dict[str, Any], distance_m: float,
+    ) -> dict[str, Any]:
         pregrasp = poses.get("pregrasp")
         grasp = poses.get("grasp")
         if not all(
@@ -187,7 +205,7 @@ class TabletopSafety:
         if length <= 1e-9:
             raise ValueError("pregrasp and grasp positions must differ.")
         offset = tuple(
-            component / length * self.grasp_contact_backoff_m
+            component / length * distance_m
             for component in vector
         )
         adjusted = dict(poses)

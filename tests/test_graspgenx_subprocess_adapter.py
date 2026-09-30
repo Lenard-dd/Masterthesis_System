@@ -80,6 +80,53 @@ def test_builds_expected_zmq_runner_command(tmp_path):
     ]
 
 
+def test_build_command_includes_scene_collision_filter(tmp_path):
+    runner = _make_runner(tmp_path)
+    adapter = GraspGenXSubprocessAdapter({
+        "runner_script": str(runner),
+        "scene_collision_threshold_m": 0.004,
+        "scene_collision_samples": 1200,
+        "scene_collision_batch_size": 2,
+    })
+
+    command = adapter._build_command(
+        "object.ply", runner, scene_point_cloud_path="environment.ply"
+    )
+
+    expected_values = {
+        "--scene-point-cloud": "environment.ply",
+        "--collision-threshold-m": "0.004",
+        "--collision-samples": "1200",
+        "--collision-batch-size": "2",
+        "--collision-closed-finger-samples": "3500",
+        "--collision-closed-finger-threshold-m": "0.008",
+        "--collision-closed-finger-backoff-m": "0.04",
+        "--constraint-min-backoff-m": "0.025",
+        "--constraint-max-backoff-m": "0.045",
+        "--constraint-backoff-step-m": "0.0025",
+        "--constraint-min-target-contact-points": "12",
+        "--constraint-min-target-contact-fraction": "0.2",
+        "--constraint-pad-contact-depth-m": "0.045",
+        "--constraint-support-plane-margin-m": "0.012",
+        "--constraint-support-plane-clearance-m": "0.01",
+        "--constraint-support-plane-inlier-threshold-m": "0.003",
+        "--constraint-support-plane-max-tilt-deg": "20.0",
+        "--constraint-support-plane-min-inliers": "24",
+        "--constraint-pregrasp-distance-m": "0.06",
+        "--constraint-retreat-distance-m": "0.1",
+        "--constraint-path-samples": "5",
+        "--constraint-path-surface-samples": "1800",
+        "--constraint-yaw-bin-deg": "15.0",
+        "--constraint-max-per-yaw-bin": "2",
+    }
+    for flag, value in expected_values.items():
+        assert command[command.index(flag) + 1] == value
+    assert "--environment-constrained-generation" in command
+    assert "--constraint-support-plane-enabled" in command
+    assert "--collision-closed-finger-enabled" in command
+    assert "--no-collision-fallback-to-object-only" in command
+
+
 def test_missing_runner_script_returns_not_available(tmp_path):
     adapter = GraspGenXSubprocessAdapter({"runner_script": str(tmp_path / "missing.py")})
 
