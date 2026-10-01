@@ -59,6 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--constraint-path-surface-samples", type=int, default=1800)
     parser.add_argument("--constraint-yaw-bin-deg", type=float, default=15.0)
     parser.add_argument("--constraint-max-per-yaw-bin", type=int, default=2)
+    parser.add_argument("--constraint-min-obb-candidates", type=int, default=12)
     parser.add_argument(
         "--collision-fallback-to-object-only",
         action=argparse.BooleanOptionalAction,
@@ -286,6 +287,9 @@ def main() -> int:
                             yaw_bin_deg=args.constraint_yaw_bin_deg,
                             max_per_bin=args.constraint_max_per_yaw_bin,
                             width_axis_index=args.width_axis_index,
+                            source_labels=sources,
+                            preferred_source="obb_sparse",
+                            min_preferred=args.constraint_min_obb_candidates,
                         )
                         grasps = np.asarray(grasps)[keep]
                         confidences = np.asarray(confidences)[keep]
@@ -337,6 +341,7 @@ def main() -> int:
                             "bin_deg": float(args.constraint_yaw_bin_deg),
                             "max_per_bin": int(args.constraint_max_per_yaw_bin),
                             "final_quota": int(args.sparse_quota),
+                            "min_obb_candidates": int(args.constraint_min_obb_candidates),
                         },
                     })
                 except Exception as collision_exc:
@@ -755,6 +760,9 @@ def select_yaw_diverse_candidates(
     yaw_bin_deg: float = 15.0,
     max_per_bin: int = 2,
     width_axis_index: int = 0,
+    source_labels: Any | None = None,
+    preferred_source: str = "obb_sparse",
+    min_preferred: int = 0,
 ) -> list[int]:
     """Select high-quality candidates without collapsing onto one planar yaw.
 
@@ -777,14 +785,29 @@ def select_yaw_diverse_candidates(
     order = sorted(range(min(poses.shape[0], values.size)), key=lambda i: float(values[i]), reverse=True)
     selected: list[int] = []
     counts: dict[int, int] = {}
-    for index in order:
-        bucket = int(bins[index])
-        if counts.get(bucket, 0) >= per_bin:
-            continue
-        selected.append(index)
-        counts[bucket] = counts.get(bucket, 0) + 1
-        if len(selected) == limit:
-            return selected
+
+    def append_diverse(indices: list[int], target_count: int) -> None:
+        for index in indices:
+            if index in selected:
+                continue
+            bucket = int(bins[index])
+            if counts.get(bucket, 0) >= per_bin:
+                continue
+            selected.append(index)
+            counts[bucket] = counts.get(bucket, 0) + 1
+            if len(selected) >= target_count:
+                return
+
+    if source_labels is not None and int(min_preferred) > 0:
+        labels = list(source_labels)
+        preferred_order = [
+            index for index in order
+            if index < len(labels) and str(labels[index]) == str(preferred_source)
+        ]
+        append_diverse(preferred_order, min(limit, int(min_preferred)))
+    append_diverse(order, limit)
+    if len(selected) == limit:
+        return selected
     # If too few distinct bins survived the scene checks, fill the remaining
     # slots by score rather than discarding otherwise safe candidates.
     selected_set = set(selected)

@@ -672,6 +672,29 @@ def screen_grasp_candidates_for_plan_only(
             return fallback_result
         return {"selected": None, "poses": None, "variant": None, "attempts": attempts}
 
+    if symmetry_config.get("prefer_reachable_obb_top_down", True):
+        maximum_preferred_tilt = float(
+            symmetry_config.get("preferred_obb_max_tilt_deg", 2.0)
+        )
+        preferred_attempts = []
+        for attempt in selected_attempts:
+            candidate = attempt.get("candidate")
+            metadata = _candidate_value(candidate, "metadata", {}) or {}
+            approach = _candidate_value(candidate, "approach_vector", None)
+            try:
+                vector = [float(approach[index]) for index in range(3)]
+                length = math.sqrt(sum(component * component for component in vector))
+                tilt = math.degrees(math.acos(min(1.0, abs(vector[2]) / length)))
+            except (TypeError, ValueError, IndexError, ZeroDivisionError):
+                tilt = float("inf")
+            if (
+                metadata.get("generation_branch") == "obb_sparse"
+                and tilt <= maximum_preferred_tilt
+            ):
+                preferred_attempts.append(attempt)
+        if preferred_attempts:
+            selected_attempts = preferred_attempts
+
     selected_attempt = sorted(selected_attempts, key=ranking_key)[0]
     selected_metadata = _candidate_value(selected_attempt["candidate"], "metadata", {}) or {}
     wrist_delta = selected_attempt.get("wrist_3_joint_delta_rad")

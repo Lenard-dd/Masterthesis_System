@@ -843,3 +843,43 @@ def test_prepare_candidate_preview_uses_screened_environment_trajectory():
     assert poses["retreat"]["position"]["z"] == pytest.approx(0.44)
     assert poses["_execution_backoff_applied"] is True
     assert poses["_trajectory_source"] == "graspgenx_environment_screened"
+
+
+def test_candidate_screening_prefers_reachable_vertical_obb_before_tilted_diffusion():
+    vertical = {
+        **FAKE_CANDIDATE,
+        "candidate_id": "vertical_obb",
+        "score": 0.20,
+        "approach_vector": [0.0, 0.0, -1.0],
+        "metadata": {"generation_branch": "obb_sparse"},
+    }
+    tilted = {
+        **FAKE_CANDIDATE,
+        "candidate_id": "tilted_diffusion",
+        "score": 0.99,
+        "approach_vector": [0.20, 0.0, -0.98],
+        "metadata": {"generation_branch": "diffusion"},
+    }
+
+    result = screen_grasp_candidates_for_plan_only(
+        [tilted, vertical],
+        point_cloud={"frame": "base_link"},
+        preview_config={
+            "candidate_screening": {
+                "enabled": True,
+                "max_candidates": 2,
+                "variants": ["full_pose"],
+                "grasp_preferences": {
+                    "parallel_jaw_symmetry_enabled": False,
+                    "prefer_reachable_obb_top_down": True,
+                    "preferred_obb_max_tilt_deg": 2.0,
+                },
+            }
+        },
+        target_frame="base_link",
+        transformer=None,
+        backend=FakePlanOnlyBackend(),
+        trajectory_validator=AllowValidator(),
+    )
+
+    assert result["selected"]["candidate_id"] == "vertical_obb"

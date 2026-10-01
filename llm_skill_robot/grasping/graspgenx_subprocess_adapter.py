@@ -60,6 +60,7 @@ class GraspGenXSubprocessAdapter:
             "path_surface_samples": 1800,
             "yaw_bin_deg": 15.0,
             "max_per_yaw_bin": 2,
+            "min_obb_candidates": 12,
         },
         "scene_collision_fallback_to_object_only": False,
     }
@@ -179,6 +180,7 @@ class GraspGenXSubprocessAdapter:
                 "--constraint-path-surface-samples", str(int(constrained.get("path_surface_samples", 1800))),
                 "--constraint-yaw-bin-deg", str(float(constrained.get("yaw_bin_deg", 15.0))),
                 "--constraint-max-per-yaw-bin", str(int(constrained.get("max_per_yaw_bin", 2))),
+                "--constraint-min-obb-candidates", str(int(constrained.get("min_obb_candidates", 12))),
             ])
             command.append(
                 "--environment-constrained-generation"

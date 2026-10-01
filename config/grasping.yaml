@@ -118,6 +118,9 @@ grasping:
       # alternatives across planar yaw instead of returning many near-duplicates.
       yaw_bin_deg: 15.0
       max_per_yaw_bin: 2
+      # Preserve enough simple vertical candidates before high-score diffusion
+      # candidates consume the final environment-safe quota.
+      min_obb_candidates: 12
     # Scene collision is a safety requirement in this mode. Stop instead of
     # silently returning object-only candidates when the API/assets fail.
     scene_collision_fallback_to_object_only: false
@@ -182,6 +185,10 @@ grasping:
         # Keep candidate ranking aligned with the hard tabletop safety gate.
         max_tilt_deg: 25.0
         top_down_weight: 2.0
+        # If a simple OBB top-down grasp is reachable, rank within that set;
+        # use tilted diffusion candidates only as fallback.
+        prefer_reachable_obb_top_down: true
+        preferred_obb_max_tilt_deg: 2.0
         prefer_face_aligned_yaw: true
         max_face_yaw_deviation_deg: 25.0
         face_alignment_weight: 2.0

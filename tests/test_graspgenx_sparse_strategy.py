@@ -381,3 +381,24 @@ def test_candidate_schema_carries_dynamic_backoff_and_trajectory():
     assert candidate["execution_backoff_m"] == pytest.approx(0.03)
     assert candidate["trajectory"] == spec
     assert candidate["metadata"]["environment_constrained_trajectory"] is True
+
+
+def test_yaw_diversity_reserves_safe_obb_candidates_before_diffusion():
+    runner = _script("graspgenx_zmq_runner")
+    poses = []
+    for yaw_deg in (0, 30, 60, 90, 120, 150):
+        yaw = np.deg2rad(yaw_deg)
+        pose = np.eye(4, dtype=np.float32)
+        pose[:2, 0] = [np.cos(yaw), np.sin(yaw)]
+        pose[:2, 1] = [-np.sin(yaw), np.cos(yaw)]
+        poses.append(pose)
+    scores = [0.99, 0.98, 0.97, 0.40, 0.39, 0.38]
+    sources = ["diffusion", "diffusion", "diffusion", "obb_sparse", "obb_sparse", "obb_sparse"]
+
+    selected = runner.select_yaw_diverse_candidates(
+        poses, scores, maximum=4, yaw_bin_deg=15.0, max_per_bin=2,
+        source_labels=sources, preferred_source="obb_sparse", min_preferred=2,
+    )
+
+    assert selected[:2] == [3, 4]
+    assert sum(sources[index] == "obb_sparse" for index in selected) >= 2

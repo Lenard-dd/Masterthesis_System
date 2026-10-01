@@ -118,6 +118,7 @@ def test_build_command_includes_scene_collision_filter(tmp_path):
         "--constraint-path-surface-samples": "1800",
         "--constraint-yaw-bin-deg": "15.0",
         "--constraint-max-per-yaw-bin": "2",
+        "--constraint-min-obb-candidates": "12",
     }
     for flag, value in expected_values.items():
         assert command[command.index(flag) + 1] == value
