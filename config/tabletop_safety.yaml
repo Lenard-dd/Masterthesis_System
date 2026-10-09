@@ -13,6 +13,16 @@ tabletop_safety:
     normal: {x: 0.0010942130, y: 0.0124989139, z: 0.9999211287}
     d: -0.0017921438
 
+  # Relative placements on the tabletop use this calibrated plane to compute
+  # support height at the destination XY. If calibration is unavailable, a
+  # declared flat-table fallback preserves the picked object's original Z.
+  relative_place_support:
+    use_calibrated_plane: true
+    flat_table_fallback: true
+    # Fail closed when the localized object bottom disagrees strongly with
+    # the calibrated support plane; this catches stale TF or bad dimensions.
+    max_source_support_error_m: 0.03
+
   # Local point from MoveIt's tool0 to the Robotiq grasp/fingertip region.
   # 0.004 m tool0-to-mount + approximately 0.195 m gripper-base-to-contact.
   # The vector is rotated by each candidate's tool0 orientation before the

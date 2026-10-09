@@ -8,6 +8,7 @@ pose and never sends a robot command.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any, Literal
 
 from llm_skill_robot.perception.scene_model import ObjectPose, SceneModel, SceneObject
@@ -46,6 +47,9 @@ class RelativePlacePosePlanner:
         inside_wall_estimate_m: float = 0.008,
         inside_object_clearance_m: float = 0.006,
         inside_release_clearance_m: float = 0.040,
+        support_plane: dict[str, Any] | None = None,
+        flat_table_fallback: bool = True,
+        max_source_support_error_m: float = 0.03,
     ) -> None:
         if default_object_size_m <= 0.0:
             raise ValueError("default_object_size_m must be positive.")
@@ -60,6 +64,11 @@ class RelativePlacePosePlanner:
         self.inside_wall_estimate_m = float(inside_wall_estimate_m)
         self.inside_object_clearance_m = float(inside_object_clearance_m)
         self.inside_release_clearance_m = float(inside_release_clearance_m)
+        self.support_plane = self._normalise_support_plane(support_plane)
+        self.flat_table_fallback = bool(flat_table_fallback)
+        if max_source_support_error_m <= 0.0:
+            raise ValueError("max_source_support_error_m must be positive.")
+        self.max_source_support_error_m = float(max_source_support_error_m)
 
     def compute(
         self,
@@ -91,10 +100,13 @@ class RelativePlacePosePlanner:
         source_size = self._dimensions(source)
         reference_sizes = [self._dimensions(reference) for reference in references]
 
+        support_assumptions: dict[str, Any] = {}
         if normalized_relation == "between":
-            target = self._between(source_pose, source_size, reference_poses, reference_sizes)
+            target, support_assumptions = self._between(
+                source_pose, source_size, reference_poses, reference_sizes,
+            )
         elif normalized_relation in {"right_of", "left_of"}:
-            target = self._side_of(
+            target, support_assumptions = self._side_of(
                 source_pose,
                 source_size,
                 reference_poses[0],
@@ -133,6 +145,7 @@ class RelativePlacePosePlanner:
                 "vertical_clearance_m": self.vertical_clearance_m,
                 "object_dimensions_estimated": estimated_dimensions,
                 "target_pose_is_plan_only": True,
+                **support_assumptions,
             },
         }
 
@@ -256,19 +269,19 @@ class RelativePlacePosePlanner:
         source_size: ObjectDimensions,
         references: list[ObjectPose],
         reference_sizes: list[ObjectDimensions],
-    ) -> ObjectPose:
+    ) -> tuple[ObjectPose, dict[str, Any]]:
         first, second = references
-        table_z = min(
-            source_pose.z - source_size.z / 2.0,
-            first.z - reference_sizes[0].z / 2.0,
-            second.z - reference_sizes[1].z / 2.0,
+        target_x = (first.x + second.x) / 2.0
+        target_y = (first.y + second.y) / 2.0
+        target_z, support = self._tabletop_target_z(
+            source_pose, source_size, target_x=target_x, target_y=target_y,
         )
         return ObjectPose(
             frame=source_pose.frame,
-            x=(first.x + second.x) / 2.0,
-            y=(first.y + second.y) / 2.0,
-            z=table_z + source_size.z / 2.0 + self.vertical_clearance_m,
-        )
+            x=target_x,
+            y=target_y,
+            z=target_z,
+        ), support
 
     def _side_of(
         self,
@@ -278,11 +291,7 @@ class RelativePlacePosePlanner:
         reference_size: ObjectDimensions,
         *,
         direction: float,
-    ) -> ObjectPose:
-        table_z = min(
-            source_pose.z - source_size.z / 2.0,
-            reference_pose.z - reference_size.z / 2.0,
-        )
+    ) -> tuple[ObjectPose, dict[str, Any]]:
         source_extent = source_size.x if self.right_axis == "x" else source_size.y
         reference_extent = reference_size.x if self.right_axis == "x" else reference_size.y
         offset = direction * (source_extent + reference_extent) / 2.0
@@ -292,12 +301,85 @@ class RelativePlacePosePlanner:
             x += offset
         else:
             y += offset
+        target_z, support = self._tabletop_target_z(
+            source_pose, source_size, target_x=x, target_y=y,
+        )
         return ObjectPose(
             frame=source_pose.frame,
             x=x,
             y=y,
-            z=table_z + source_size.z / 2.0 + self.vertical_clearance_m,
-        )
+            z=target_z,
+        ), support
+
+    def _tabletop_target_z(
+        self, source_pose: ObjectPose, source_size: ObjectDimensions, *,
+        target_x: float, target_y: float,
+    ) -> tuple[float, dict[str, Any]]:
+        """Use a calibrated support plane, or preserve height on a declared flat table."""
+        source_bottom = source_pose.z - source_size.z / 2.0
+        if self.support_plane is not None:
+            source_support_z = self._plane_z(source_pose.x, source_pose.y)
+            residual = source_bottom - source_support_z
+            if abs(residual) > self.max_source_support_error_m:
+                raise SpatialReasoningError(
+                    "Source object bottom is inconsistent with the calibrated tabletop "
+                    f"by {abs(residual):.3f} m (limit {self.max_source_support_error_m:.3f} m)."
+                )
+            target_support_z = self._plane_z(target_x, target_y)
+            return (
+                # Preserve the localized source pose's vertical convention
+                # (centroid vs visible-surface point) while applying only the
+                # calibrated support-plane height delta. This also preserves
+                # the reviewed object-to-gripper transform at placement.
+                source_pose.z
+                + (target_support_z - source_support_z)
+                + self.vertical_clearance_m,
+                {
+                    "support_height_strategy": "calibrated_plane",
+                    "source_support_residual_m": residual,
+                    "target_support_z_m": target_support_z,
+                },
+            )
+        if not self.flat_table_fallback:
+            raise SpatialReasoningError(
+                "No calibrated tabletop plane is available and flat-table fallback is disabled."
+            )
+        return source_pose.z + self.vertical_clearance_m, {
+            "support_height_strategy": "source_height_flat_table_fallback",
+            "source_support_z_m": source_bottom,
+        }
+
+    def _plane_z(self, x: float, y: float) -> float:
+        assert self.support_plane is not None
+        nx, ny, nz = self.support_plane["normal"]
+        return -(nx * float(x) + ny * float(y) + self.support_plane["d"]) / nz
+
+    @staticmethod
+    def _normalise_support_plane(value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        frame = str(value.get("frame", "base_link"))
+        raw_normal = value.get("normal", {})
+        try:
+            if isinstance(raw_normal, dict):
+                normal = tuple(float(raw_normal[axis]) for axis in ("x", "y", "z"))
+            else:
+                normal = tuple(float(item) for item in raw_normal)
+            d = float(value["d"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("support_plane must contain numeric normal x/y/z and d.") from exc
+        if len(normal) != 3 or not all(math.isfinite(item) for item in (*normal, d)):
+            raise ValueError("support_plane values must be finite.")
+        length = math.sqrt(sum(item * item for item in normal))
+        if length <= 1e-9:
+            raise ValueError("support_plane normal must not be zero.")
+        normal = tuple(item / length for item in normal)
+        d /= length
+        if frame != "base_link":
+            raise ValueError("support_plane must be expressed in base_link.")
+        if abs(normal[2]) < 0.95:
+            raise ValueError("support_plane must be close to horizontal.")
+        return {"frame": frame, "normal": normal, "d": d}
 
     def _on_top_of(
         self,

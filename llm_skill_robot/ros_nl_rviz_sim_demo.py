@@ -130,6 +130,32 @@ def _load_grasping_config() -> Dict[str, Any]:
         return yaml.safe_load(handle) or {}
 
 
+def _relative_place_support_kwargs() -> Dict[str, Any]:
+    """Load the calibrated base_link support plane with a bounded flat fallback."""
+    config_file = get_config_dir() / "tabletop_safety.yaml"
+    if not config_file.exists():
+        return {"support_plane": None, "flat_table_fallback": True}
+    with config_file.open("r", encoding="utf-8") as handle:
+        document = yaml.safe_load(handle) or {}
+    tabletop = document.get("tabletop_safety", {}) or {}
+    policy = tabletop.get("relative_place_support", {}) or {}
+    plane = tabletop.get("plane") if bool(tabletop.get("enabled", False)) else None
+    support_plane = None
+    if bool(policy.get("use_calibrated_plane", True)) and isinstance(plane, dict):
+        support_plane = {
+            "frame": str(tabletop.get("frame", "base_link")),
+            "normal": plane.get("normal"),
+            "d": plane.get("d"),
+        }
+    return {
+        "support_plane": support_plane,
+        "flat_table_fallback": bool(policy.get("flat_table_fallback", True)),
+        "max_source_support_error_m": float(
+            policy.get("max_source_support_error_m", 0.03)
+        ),
+    }
+
+
 def _create_gripper_joint_state_sim(node) -> Robotiq2F140JointStateSim | None:
     config = _load_gripper_joint_mapping_config()
     mapping = config.get("gripper_joint_mapping", {})
@@ -282,14 +308,15 @@ def execute_non_motion_skill(
                 point_cloud_builder=point_cloud_builder,
             )
             relation_constraints = parameters.get("relation_constraints")
+            planner = RelativePlacePosePlanner(**_relative_place_support_kwargs())
             if isinstance(relation_constraints, list) and relation_constraints:
-                result = RelativePlacePosePlanner().compute_composite(
+                result = planner.compute_composite(
                     latest_scene or {},
                     source_id=str(parameters.get("source_id", "")),
                     relation_specs=[dict(item) for item in relation_constraints if isinstance(item, dict)],
                 )
             else:
-                result = RelativePlacePosePlanner().compute(
+                result = planner.compute(
                     latest_scene or {},
                     source_id=str(parameters.get("source_id", "")),
                     relation=str(parameters.get("relation", "")),

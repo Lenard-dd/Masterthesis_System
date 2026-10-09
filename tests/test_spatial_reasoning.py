@@ -61,6 +61,62 @@ def test_right_of_uses_object_extents_and_clearance():
     assert result["target_pose"]["y"] == pytest.approx(0.10)
 
 
+def test_side_placement_flat_fallback_preserves_source_height_not_reference_bottom():
+    scene = SceneModel(objects=[
+        _object("nut_1", 0.40, -0.10, 0.012, dimensions=(0.02, 0.02, 0.01)),
+        # Deliberately inconsistent container bottom; it must not drag the
+        # tabletop placement height below the picked object's support level.
+        _object("box_1", 0.50, -0.10, 0.01, dimensions=(0.12, 0.10, 0.10)),
+    ])
+
+    result = RelativePlacePosePlanner().compute(
+        scene, source_id="nut_1", relation="left_of", reference_ids=["box_1"],
+    )
+
+    assert result["target_pose"]["z"] == pytest.approx(0.015)
+    assert result["assumptions"]["support_height_strategy"] == "source_height_flat_table_fallback"
+
+
+def test_side_placement_uses_calibrated_tilted_plane_at_target_xy():
+    scene = SceneModel(objects=[
+        _object("nut_1", 0.0, 0.0, 0.01, dimensions=(0.02, 0.02, 0.02)),
+        _object("box_1", 0.30, 0.0, 0.05, dimensions=(0.10, 0.10, 0.10)),
+    ])
+    planner = RelativePlacePosePlanner(support_plane={
+        "frame": "base_link", "normal": {"x": -0.10, "y": 0.0, "z": 1.0}, "d": 0.0,
+    })
+
+    result = planner.compute(
+        scene, source_id="nut_1", relation="right_of", reference_ids=["box_1"],
+    )
+
+    target = result["target_pose"]
+    normal_length = (1.0 + 0.10 ** 2) ** 0.5
+    expected_plane_z = -(
+        (-0.10 / normal_length) * target["x"]
+    ) / (1.0 / normal_length)
+    assert target["z"] == pytest.approx(expected_plane_z + 0.01 + 0.003)
+    assert result["assumptions"]["support_height_strategy"] == "calibrated_plane"
+
+
+def test_calibrated_plane_rejects_inconsistent_source_support_height():
+    scene = SceneModel(objects=[
+        _object("nut_1", 0.0, 0.0, 0.10, dimensions=(0.02, 0.02, 0.02)),
+        _object("box_1", 0.30, 0.0, 0.05, dimensions=(0.10, 0.10, 0.10)),
+    ])
+    planner = RelativePlacePosePlanner(
+        support_plane={
+            "frame": "base_link", "normal": {"x": 0.0, "y": 0.0, "z": 1.0}, "d": 0.0,
+        },
+        max_source_support_error_m=0.02,
+    )
+
+    with pytest.raises(SpatialReasoningError, match="inconsistent"):
+        planner.compute(
+            scene, source_id="nut_1", relation="right_of", reference_ids=["box_1"],
+        )
+
+
 def test_on_top_of_uses_both_object_heights():
     scene = SceneModel(objects=[
         _object("black_cube_1", 0.10, 0.10, 0.02, dimensions=(0.04, 0.04, 0.06)),
