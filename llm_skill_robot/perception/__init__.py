@@ -6,6 +6,11 @@ from llm_skill_robot.perception.perception_factory import (
 )
 from llm_skill_robot.perception.perception_pipeline import PerceptionPipeline
 from llm_skill_robot.perception.perception_skill_backend import PerceptionSkillBackend
+from llm_skill_robot.perception.labeled_region_recognition import (
+    LabeledRegionResolver,
+    LabeledRegionVisionClient,
+    labeled_region_letter,
+)
 from llm_skill_robot.perception.scene_understanding import (
     SceneCandidate,
     SceneDescription,
@@ -32,6 +37,9 @@ __all__ = [
     "load_perception_config",
     "PerceptionPipeline",
     "PerceptionSkillBackend",
+    "LabeledRegionResolver",
+    "LabeledRegionVisionClient",
+    "labeled_region_letter",
     "SceneCandidate",
     "SceneDescription",
     "SceneDescriptionSkillBackend",

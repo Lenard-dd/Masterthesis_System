@@ -17,3 +17,16 @@ scene_understanding:
   # later precision localization.
   image_detail: low
   max_candidates: 8
+
+# Resolve instructions such as "put the nut on area A" without asking SAM3
+# to perform OCR. SAM3 localizes the paper; the same vision-capable LLM reads
+# one bounded character from each localized candidate crop.
+labeled_region_recognition:
+  enabled: true
+  # Leave blank to reuse llm.model.
+  model: ""
+  temperature: 0.0
+  timeout_sec: 30
+  image_detail: high
+  crop_padding_px: 8
+  visual_query: "white rectangular paper"
