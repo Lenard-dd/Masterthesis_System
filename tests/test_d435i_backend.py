@@ -280,6 +280,56 @@ def test_detect_object_estimates_pose_when_depth_and_camera_info_available():
     assert result.objects[0].pose.z == 2.0
 
 
+def test_detect_object_uses_rgb_associated_depth_snapshot_after_detector_delay():
+    backend = None
+
+    class Detector:
+        def detect(self, *_args):
+            # Simulate live depth callbacks continuing while SAM3 is running.
+            backend.latest_depth_msg = {
+                "image": np.full((5, 5), 3.0, dtype=np.float32),
+                "encoding": "32FC1",
+            }
+            return {
+                "status": "SUCCESS",
+                "message": "detected",
+                "detections": [{
+                    "label": "red cube",
+                    "confidence": 0.9,
+                    "bbox_xyxy": [2, 2, 4, 4],
+                    "metadata": {},
+                }],
+            }
+
+    backend = D435iBackend(
+        config={"wait_timeout_sec": 0.0}, detector_adapter=Detector(),
+    )
+    backend.latest_rgb_msg = object()
+    backend.latest_depth_msg = {
+        "image": np.full((5, 5), 2.0, dtype=np.float32),
+        "encoding": "32FC1",
+    }
+    backend.latest_camera_info_msg = Mock(
+        k=[100.0, 0.0, 2.0, 0.0, 100.0, 2.0, 0.0, 0.0, 1.0]
+    )
+    backend._store_rgbd_snapshot(
+        "capture-1",
+        depth_frame=backend._get_latest_depth_image(),
+        camera_info=backend.latest_camera_info_msg,
+    )
+    backend._save_latest_rgb_frame = Mock(return_value={
+        "status": "SUCCESS",
+        "message": "saved",
+        "path": "data/perception_runtime/latest_rgb.png",
+        "capture_id": "capture-1",
+    })
+
+    result = backend.detect_object("red cube")
+
+    assert result.objects[0].pose.z == 2.0
+    assert result.objects[0].metadata["rgbd_capture_id"] == "capture-1"
+
+
 def test_detect_object_transforms_pose_to_target_frame_when_tf_available():
     detector = Mock()
     detector.detect.return_value = {

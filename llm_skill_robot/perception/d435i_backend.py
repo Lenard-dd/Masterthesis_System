@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import threading
 import time
 from pathlib import Path
@@ -59,6 +60,9 @@ class D435iBackend(BasePerceptionBackend):
         self.latest_rgb_msg = None
         self.latest_depth_msg = None
         self.latest_camera_info_msg = None
+        self._sensor_lock = threading.Lock()
+        self._snapshot_lock = threading.Lock()
+        self._rgbd_snapshots: dict[str, dict[str, Any]] = {}
         self._rgb_frame_event = threading.Event()
         self._depth_frame_event = threading.Event()
         self._camera_info_event = threading.Event()
@@ -145,7 +149,13 @@ class D435iBackend(BasePerceptionBackend):
         )
         detector_status = detector_result.get("status", "FAILED")
         detections = detector_result.get("detections", [])
-        objects = self._detections_to_scene_objects(detections)
+        capture_id = str(save_result.get("capture_id", ""))
+        objects = self._detections_to_scene_objects(
+            detections,
+            snapshot=self.get_rgbd_snapshot(capture_id),
+            capture_id=capture_id,
+            rgb_image_path=str(save_result.get("path", "")),
+        )
         self.latest_scene = SceneModel(
             objects=objects,
             frame=self._scene_frame(objects),
@@ -201,10 +211,17 @@ class D435iBackend(BasePerceptionBackend):
                 {"query": query, **self.detector_adapter.detect(save_result["path"], query, min_confidence)}
                 for query in normalized_queries
             ]
+        capture_id = str(save_result.get("capture_id", ""))
+        snapshot = self.get_rgbd_snapshot(capture_id)
         for raw_result in raw_query_results:
             query = str(raw_result.get("query", ""))
             detector_status = str(raw_result.get("status", "FAILED"))
-            query_objects = self._detections_to_scene_objects(raw_result.get("detections", []))
+            query_objects = self._detections_to_scene_objects(
+                raw_result.get("detections", []),
+                snapshot=snapshot,
+                capture_id=capture_id,
+                rgb_image_path=str(save_result.get("path", "")),
+            )
             for item in query_objects:
                 objects.append(item.model_copy(update={
                     "object_id": f"{self._object_id_label(item.label)}_{len(objects) + 1}",
@@ -320,15 +337,18 @@ class D435iBackend(BasePerceptionBackend):
         ]
 
     def _on_rgb_image(self, msg) -> None:
-        self.latest_rgb_msg = msg
+        with self._sensor_lock:
+            self.latest_rgb_msg = msg
         self._rgb_frame_event.set()
 
     def _on_depth_image(self, msg) -> None:
-        self.latest_depth_msg = msg
+        with self._sensor_lock:
+            self.latest_depth_msg = msg
         self._depth_frame_event.set()
 
     def _on_camera_info(self, msg) -> None:
-        self.latest_camera_info_msg = msg
+        with self._sensor_lock:
+            self.latest_camera_info_msg = msg
         self._camera_info_event.set()
 
     def _wait_for_rgb_frame(self) -> bool:
@@ -355,7 +375,19 @@ class D435iBackend(BasePerceptionBackend):
         return self.latest_rgb_msg is not None
 
     def _save_latest_rgb_frame(self) -> dict:
-        if self.latest_rgb_msg is None:
+        # Freeze the latest RGB-D inputs before SAM3 starts.  Detector inference
+        # can take several seconds, during which ROS callbacks continue updating
+        # ``latest_depth_msg``.  Keeping this small in-memory snapshot prevents a
+        # mask from the saved RGB image being projected through a later depth
+        # frame.  It adds no detector call and therefore negligible latency.
+        with self._sensor_lock:
+            rgb_msg = self.latest_rgb_msg
+            depth_msg = self.latest_depth_msg
+            # ROS messages are replaced by callbacks rather than mutated, so
+            # retaining this reference safely binds the matching intrinsics
+            # without relying on message deepcopy support.
+            camera_info = self.latest_camera_info_msg
+        if rgb_msg is None:
             return {
                 "status": "NOT_AVAILABLE",
                 "message": "No RGB message is available to save.",
@@ -385,7 +417,7 @@ class D435iBackend(BasePerceptionBackend):
         try:
             runtime_dir.mkdir(parents=True, exist_ok=True)
             image = self._bridge.imgmsg_to_cv2(
-                self.latest_rgb_msg,
+                rgb_msg,
                 desired_encoding="bgr8",
             )
             if not cv2.imwrite(str(latest_rgb_path), image):
@@ -399,17 +431,40 @@ class D435iBackend(BasePerceptionBackend):
                 "message": f"Failed to convert or save latest RGB frame: {exc}",
             }
 
+        capture_id = f"rgbd-{time.time_ns()}"
+        self._store_rgbd_snapshot(
+            capture_id,
+            depth_frame=self._depth_image_from_message(depth_msg),
+            camera_info=camera_info,
+        )
         return {
             "status": "SUCCESS",
             "message": f"Saved latest RGB frame to {latest_rgb_path}.",
             "path": str(latest_rgb_path),
+            "capture_id": capture_id,
         }
 
-    def _detections_to_scene_objects(self, detections: Any) -> list[SceneObject]:
+    def _detections_to_scene_objects(
+        self,
+        detections: Any,
+        *,
+        snapshot: dict[str, Any] | None = None,
+        capture_id: str = "",
+        rgb_image_path: str = "",
+    ) -> list[SceneObject]:
         if not isinstance(detections, list):
             return []
 
-        depth_image = self._get_latest_depth_image()
+        snapshot_depth = snapshot.get("depth_frame") if snapshot else None
+        snapshot_camera_info = snapshot.get("camera_info") if snapshot else None
+        depth_image = (
+            snapshot_depth if snapshot_depth is not None else self._get_latest_depth_image()
+        )
+        camera_info = (
+            snapshot_camera_info
+            if snapshot_camera_info is not None
+            else self.latest_camera_info_msg
+        )
         objects: list[SceneObject] = []
         for index, detection in enumerate(detections, start=1):
             if not isinstance(detection, dict):
@@ -427,10 +482,14 @@ class D435iBackend(BasePerceptionBackend):
                     "overlay_path": overlay_path,
                 }
             )
+            if capture_id:
+                metadata["rgbd_capture_id"] = capture_id
+            if rgb_image_path:
+                metadata["rgb_image_path"] = rgb_image_path
             pose = self.pose_estimator.estimate_pose_from_detection(
                 detection=detection,
                 depth_image=depth_image,
-                camera_info=self.latest_camera_info_msg,
+                camera_info=camera_info,
                 target_frame=self.config.get(
                     "depth_frame",
                     self.config.get("rgb_frame", "camera_color_optical_frame"),
@@ -486,14 +545,19 @@ class D435iBackend(BasePerceptionBackend):
         return normalized or "object"
 
     def _get_latest_depth_image(self):
-        if self.latest_depth_msg is None:
+        with self._sensor_lock:
+            depth_msg = self.latest_depth_msg
+        return self._depth_image_from_message(depth_msg)
+
+    def _depth_image_from_message(self, depth_msg):
+        if depth_msg is None:
             return None
 
-        if hasattr(self.latest_depth_msg, "image"):
-            return self.latest_depth_msg
+        if hasattr(depth_msg, "image"):
+            return copy.deepcopy(depth_msg)
 
-        if not hasattr(self.latest_depth_msg, "encoding"):
-            return self.latest_depth_msg
+        if not hasattr(depth_msg, "encoding"):
+            return copy.deepcopy(depth_msg)
 
         try:
             from cv_bridge import CvBridge
@@ -505,16 +569,36 @@ class D435iBackend(BasePerceptionBackend):
 
         try:
             image = self._bridge.imgmsg_to_cv2(
-                self.latest_depth_msg,
+                depth_msg,
                 desired_encoding="passthrough",
             )
         except Exception:
             return None
 
         return {
-            "image": image,
-            "encoding": getattr(self.latest_depth_msg, "encoding", ""),
+            "image": image.copy() if hasattr(image, "copy") else image,
+            "encoding": getattr(depth_msg, "encoding", ""),
         }
+
+    def _store_rgbd_snapshot(
+        self, capture_id: str, *, depth_frame: Any, camera_info: Any,
+    ) -> None:
+        with self._snapshot_lock:
+            self._rgbd_snapshots[capture_id] = {
+                "depth_frame": depth_frame,
+                "camera_info": camera_info,
+            }
+            # A few immutable frames cover sequential batches without allowing
+            # long-running GUI sessions to accumulate camera-sized arrays.
+            while len(self._rgbd_snapshots) > 8:
+                self._rgbd_snapshots.pop(next(iter(self._rgbd_snapshots)))
+
+    def get_rgbd_snapshot(self, capture_id: str) -> dict[str, Any] | None:
+        """Return the RGB-associated depth inputs for a localized object."""
+        if not capture_id:
+            return None
+        with self._snapshot_lock:
+            return self._rgbd_snapshots.get(capture_id)
 
     @staticmethod
     def _clamp_confidence(value: Any) -> float:

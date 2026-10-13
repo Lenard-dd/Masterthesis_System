@@ -70,35 +70,57 @@ class PlaceMotionBuilder:
         }
         if placement_safety:
             mode = placement_safety.get("mode")
-            if mode != "above_opening_drop" or placement_safety.get("gripper_enters_container") is not False:
-                raise PlaceMotionError("Only non-inserting above-opening inside placement is supported.")
-            try:
-                minimum_object_bottom = float(placement_safety["minimum_object_bottom_z_m"])
-                target_object_bottom = target["z"] - float(placement_safety["source_height_m"]) / 2.0
-            except (KeyError, TypeError, ValueError) as exc:
-                raise PlaceMotionError("Inside placement safety metadata is incomplete.") from exc
-            if target_object_bottom + 1e-6 < minimum_object_bottom:
-                raise PlaceMotionError("Inside release pose would put the object below its safe rim clearance.")
-            try:
-                rim_z = float(placement_safety["rim_z_m"])
-            except (KeyError, TypeError, ValueError) as exc:
-                raise PlaceMotionError("Inside placement safety metadata has no valid rim height.") from exc
+            if mode == "above_opening_drop":
+                if placement_safety.get("gripper_enters_container") is not False:
+                    raise PlaceMotionError("Only non-inserting above-opening inside placement is supported.")
+                try:
+                    minimum_object_bottom = float(placement_safety["minimum_object_bottom_z_m"])
+                    target_object_bottom = target["z"] - float(placement_safety["source_height_m"]) / 2.0
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise PlaceMotionError("Inside placement safety metadata is incomplete.") from exc
+                if target_object_bottom + 1e-6 < minimum_object_bottom:
+                    raise PlaceMotionError("Inside release pose would put the object below its safe rim clearance.")
+                try:
+                    rim_z = float(placement_safety["rim_z_m"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise PlaceMotionError("Inside placement safety metadata has no valid rim height.") from exc
 
-            # Checking only the object centre is insufficient for a small box:
-            # the Robotiq fingers can still straddle the rim while opening.  Use
-            # the calibrated tool0-to-contact transform and lift the complete
-            # release pose until the grasp/contact region clears the rim.
-            contact_point = self._local_point_in_pose(contact, self.tool0_to_grasp_contact_m)
-            minimum_contact_z = rim_z + self.inside_contact_clearance_above_rim_m
-            upward_adjustment = max(0.0, minimum_contact_z - contact_point["z"])
-            contact["position"]["z"] += upward_adjustment
-            placement_safety = {
-                **placement_safety,
-                "minimum_grasp_contact_z_m": minimum_contact_z,
-                "grasp_contact_clearance_above_rim_m": self.inside_contact_clearance_above_rim_m,
-                "release_pose_upward_adjustment_m": upward_adjustment,
-                "release_grasp_contact_z_m": contact_point["z"] + upward_adjustment,
-            }
+                # Checking only the object centre is insufficient for a small box:
+                # the Robotiq fingers can still straddle the rim while opening.  Use
+                # the calibrated tool0-to-contact transform and lift the complete
+                # release pose until the grasp/contact region clears the rim.
+                contact_point = self._local_point_in_pose(contact, self.tool0_to_grasp_contact_m)
+                minimum_contact_z = rim_z + self.inside_contact_clearance_above_rim_m
+                upward_adjustment = max(0.0, minimum_contact_z - contact_point["z"])
+                contact["position"]["z"] += upward_adjustment
+                placement_safety = {
+                    **placement_safety,
+                    "minimum_grasp_contact_z_m": minimum_contact_z,
+                    "grasp_contact_clearance_above_rim_m": self.inside_contact_clearance_above_rim_m,
+                    "release_pose_upward_adjustment_m": upward_adjustment,
+                    "release_grasp_contact_z_m": contact_point["z"] + upward_adjustment,
+                }
+            elif mode == "supported_surface":
+                try:
+                    source_support_z = float(placement_safety["source_support_z_m"])
+                    minimum_object_bottom = float(placement_safety["minimum_object_bottom_z_m"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise PlaceMotionError("Supported placement safety metadata is incomplete.") from exc
+                tool_above_source_support = grasp["position"]["z"] - source_support_z
+                if tool_above_source_support <= 0.0:
+                    raise PlaceMotionError("Reviewed grasp is not above the source support surface.")
+                minimum_tool_z = minimum_object_bottom + tool_above_source_support
+                upward_adjustment = max(0.0, minimum_tool_z - contact["position"]["z"])
+                contact["position"]["z"] += upward_adjustment
+                placement_safety = {
+                    **placement_safety,
+                    "source_tool_above_support_m": tool_above_source_support,
+                    "minimum_release_tool_z_m": minimum_tool_z,
+                    "release_pose_upward_adjustment_m": upward_adjustment,
+                    "release_tool_z_m": contact["position"]["z"],
+                }
+            else:
+                raise PlaceMotionError(f"Unsupported placement safety mode {mode!r}.")
         approach = self._vertical_offset(contact, self.approach_height_m)
         retreat = self._vertical_offset(contact, self.approach_height_m)
         return {
@@ -111,7 +133,11 @@ class PlaceMotionBuilder:
             "place_contact_pose": contact,
             "place_retreat_pose": retreat,
             "requires_confirmation": True,
-            **({"inside_safety": dict(placement_safety)} if placement_safety else {}),
+            **(
+                {"inside_safety": dict(placement_safety)}
+                if placement_safety and placement_safety.get("mode") == "above_opening_drop"
+                else ({"placement_safety": dict(placement_safety)} if placement_safety else {})
+            ),
         }
 
     @staticmethod

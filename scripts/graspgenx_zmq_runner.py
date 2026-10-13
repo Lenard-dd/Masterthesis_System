@@ -38,18 +38,18 @@ def parse_args() -> argparse.Namespace:
         default=True,
     )
     parser.add_argument("--collision-closed-finger-samples", type=int, default=3500)
-    parser.add_argument("--collision-closed-finger-threshold-m", type=float, default=0.008)
+    parser.add_argument("--collision-closed-finger-threshold-m", type=float, default=0.0065)
     parser.add_argument("--collision-closed-finger-backoff-m", type=float, default=0.040)
     parser.add_argument("--environment-constrained-generation", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--constraint-min-backoff-m", type=float, default=0.025)
-    parser.add_argument("--constraint-max-backoff-m", type=float, default=0.045)
+    parser.add_argument("--constraint-max-backoff-m", type=float, default=0.050)
     parser.add_argument("--constraint-backoff-step-m", type=float, default=0.0025)
     parser.add_argument("--constraint-min-target-contact-points", type=int, default=12)
     parser.add_argument("--constraint-min-target-contact-fraction", type=float, default=0.20)
     parser.add_argument("--constraint-pad-contact-depth-m", type=float, default=0.045)
     parser.add_argument("--constraint-support-plane-enabled", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--constraint-support-plane-margin-m", type=float, default=0.012)
-    parser.add_argument("--constraint-support-plane-clearance-m", type=float, default=0.010)
+    parser.add_argument("--constraint-support-plane-clearance-m", type=float, default=0.011)
     parser.add_argument("--constraint-support-plane-inlier-threshold-m", type=float, default=0.003)
     parser.add_argument("--constraint-support-plane-max-tilt-deg", type=float, default=20.0)
     parser.add_argument("--constraint-support-plane-min-inliers", type=int, default=24)
@@ -450,7 +450,7 @@ def constrain_grasps_to_environment(
     pad_contact_depth_m: float | None = None,
     support_plane_enabled: bool = False,
     support_plane_margin_m: float = 0.012,
-    support_plane_clearance_m: float = 0.010,
+    support_plane_clearance_m: float = 0.011,
     support_plane_inlier_threshold_m: float = 0.003,
     support_plane_max_tilt_deg: float = 20.0,
     support_plane_min_inliers: int = 24,

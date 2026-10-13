@@ -115,6 +115,9 @@ class RelativePlacePosePlanner:
             )
         elif normalized_relation == "on_top_of":
             target = self._on_top_of(source_pose, source_size, reference_poses[0], reference_sizes[0])
+            placement_safety = self._supported_surface_safety(
+                source_pose, source_size, target,
+            )
         else:
             target, inside_safety = self._inside_above_opening(
                 source_pose, source_size, references[0], reference_poses[0], reference_sizes[0],
@@ -139,6 +142,8 @@ class RelativePlacePosePlanner:
             "geometry_constraints": constraint_set.as_dict(),
             **({"inside_safety": inside_safety, "placement_mode": "above_opening_drop"}
                if normalized_relation == "inside" else {}),
+            **({"placement_safety": placement_safety, "placement_mode": "supported_surface"}
+               if normalized_relation == "on_top_of" else {}),
             "assumptions": {
                 "right_axis": f"+{self.right_axis}",
                 "horizontal_clearance_m": self.horizontal_clearance_m,
@@ -399,6 +404,38 @@ class RelativePlacePosePlanner:
                 + self.vertical_clearance_m
             ),
         )
+
+    def _supported_surface_safety(
+        self,
+        source_pose: ObjectPose,
+        source_size: ObjectDimensions,
+        target_pose: ObjectPose,
+    ) -> dict[str, Any]:
+        """Describe the support-relative height invariant for a carried object.
+
+        RGB-D object poses may represent a visible surface point rather than a
+        true geometric centre.  Reusing ``grasp_z - source_pose.z`` at place
+        can therefore push a curved/tall object into its destination.  The
+        pickup tool height above the calibrated source support is observable
+        and remains valid regardless of that centre convention.
+        """
+        if self.support_plane is not None:
+            source_support_z = self._plane_z(source_pose.x, source_pose.y)
+            support_strategy = "calibrated_plane"
+        else:
+            source_support_z = source_pose.z - source_size.z / 2.0
+            support_strategy = "localized_bottom_fallback"
+        return {
+            "mode": "supported_surface",
+            "source_support_z_m": source_support_z,
+            # The spatial solver already includes its configured vertical
+            # clearance in target_pose.  This is the lowest permitted object
+            # bottom at release and must not be added a second time.
+            "minimum_object_bottom_z_m": target_pose.z - source_size.z / 2.0,
+            "source_height_m": source_size.z,
+            "support_height_strategy": support_strategy,
+            "release_clearance_m": self.vertical_clearance_m,
+        }
 
     @staticmethod
     def _scene(scene: SceneModel | dict[str, Any]) -> SceneModel:

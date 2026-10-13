@@ -485,3 +485,51 @@ def test_point_cloud_reuses_mask_metadata_from_latest_multi_object_scene():
 
     assert result["success"] is True
     assert received["metadata"]["mask_path"] == "/tmp/cube_1_mask.png"
+
+
+def test_point_cloud_reuses_depth_snapshot_bound_to_detection():
+    class SnapshotCamera(_ReadyRGBDCamera):
+        def __init__(self):
+            super().__init__()
+            self.latest_depth_msg = {"image": [[2000]], "encoding": "16UC1"}
+
+        def get_rgbd_snapshot(self, capture_id):
+            assert capture_id == "capture-1"
+            return {
+                "depth_frame": {"image": [[1000]], "encoding": "16UC1"},
+                "camera_info": self.latest_camera_info_msg,
+            }
+
+    pipeline = PerceptionPipeline()
+    pipeline.backend = SnapshotCamera()
+    pipeline.latest_scene = SceneModel.model_validate({
+        "objects": [{
+            "object_id": "cube_1", "label": "red cube", "confidence": 0.9,
+            "metadata": {
+                "mask_path": "/tmp/cube_1_mask.png",
+                "rgbd_capture_id": "capture-1",
+            },
+        }],
+    })
+    received = {}
+
+    class Builder(_PointCloudBuilder):
+        def build(self, scene_object, depth_frame, camera_info, frame=None):
+            received["depth_frame"] = depth_frame
+            value = scene_object.model_dump() if hasattr(scene_object, "model_dump") else scene_object
+            return super().build(value, depth_frame, camera_info, frame=frame)
+
+    result = execute_non_motion_skill(
+        PlanStep(
+            step_id="3", skill_id="build_object_point_cloud",
+            description="Build point cloud", parameters={"object_id": "cube_1"},
+        ),
+        gripper_backend=None,
+        context={"selected_object": {"object_id": "cube_1"}},
+        perception_pipeline=pipeline,
+        point_cloud_builder=Builder(),
+    )
+
+    assert result["success"] is True
+    assert received["depth_frame"]["image"] == [[1000]]
+    assert result["output"]["rgbd_snapshot_used"] is True

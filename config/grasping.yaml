@@ -83,19 +83,19 @@ grasping:
     # covers the changed fingertip location without translating the palm.
     scene_collision_closed_finger_enabled: true
     scene_collision_closed_finger_samples: 3500
-    # Use 8 mm for discrete non-planar scene points. The independently
-    # estimated local support plane keeps its stricter 10 mm clearance below,
-    # avoiding a 10 mm point-cloud threshold cliff from D435i sampling noise.
-    scene_collision_closed_finger_threshold_m: 0.008
+    # Keep 6.5 mm around discrete non-planar scene points. The independently
+    # estimated local support plane retains an 11 mm clearance below so tabletop
+    # protection remains separate from small-object point-cloud noise.
+    scene_collision_closed_finger_threshold_m: 0.0065
     # Retained for the legacy one-pose collision path. Constrained generation
     # below searches the final backoff per candidate.
     scene_collision_closed_finger_backoff_m: 0.040
     environment_constrained_generation:
       enabled: true
       min_backoff_m: 0.025
-      max_backoff_m: 0.045
+      max_backoff_m: 0.050
       # Finer insertion-depth search reduces quantization error without another
-      # model inference; 2.5 mm gives nine trials across the calibrated range.
+      # model inference; 2.5 mm gives eleven trials across the calibrated range.
       backoff_step_m: 0.0025
       min_target_contact_points: 12
       min_target_contact_fraction: 0.20
@@ -106,7 +106,7 @@ grasping:
       # analytically check the closed gripper surface against that plane.
       support_plane_enabled: true
       support_plane_margin_m: 0.012
-      support_plane_clearance_m: 0.010
+      support_plane_clearance_m: 0.011
       support_plane_inlier_threshold_m: 0.003
       support_plane_max_tilt_deg: 20.0
       support_plane_min_inliers: 24

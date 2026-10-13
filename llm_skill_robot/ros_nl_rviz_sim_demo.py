@@ -372,6 +372,32 @@ def execute_non_motion_skill(
             camera = getattr(perception_pipeline, "backend", None)
             readiness = _wait_for_point_cloud_inputs(camera)
             depth_getter = getattr(camera, "_get_latest_depth_image", None)
+            metadata = (
+                getattr(selected, "metadata", None)
+                if not isinstance(selected, dict)
+                else selected.get("metadata")
+            ) or {}
+            capture_id = str(metadata.get("rgbd_capture_id", "")).strip()
+            snapshot_getter = getattr(camera, "get_rgbd_snapshot", None)
+            snapshot = (
+                snapshot_getter(capture_id)
+                if capture_id and callable(snapshot_getter)
+                else None
+            )
+            snapshot_depth = snapshot.get("depth_frame") if isinstance(snapshot, dict) else None
+            snapshot_camera_info = (
+                snapshot.get("camera_info") if isinstance(snapshot, dict) else None
+            )
+            depth_frame = (
+                snapshot_depth
+                if snapshot_depth is not None
+                else depth_getter() if callable(depth_getter) else None
+            )
+            camera_info = (
+                snapshot_camera_info
+                if snapshot_camera_info is not None
+                else getattr(camera, "latest_camera_info_msg", None)
+            )
             camera_config = getattr(camera, "config", {}) or {}
             source_frame = (
                 camera_config.get("depth_frame", "camera_color_optical_frame")
@@ -384,9 +410,14 @@ def execute_non_motion_skill(
                 point_cloud_kwargs["point_transformer"] = point_transformer
             result = point_cloud_builder.build(
                 selected,
-                depth_getter() if callable(depth_getter) else None,
-                getattr(camera, "latest_camera_info_msg", None),
+                depth_frame,
+                camera_info,
                 **point_cloud_kwargs,
+            )
+            result.setdefault("rgbd_capture_id", capture_id or None)
+            result.setdefault(
+                "rgbd_snapshot_used",
+                snapshot_depth is not None and snapshot_camera_info is not None,
             )
             result.setdefault("camera_readiness", readiness)
             if result.get("success"):

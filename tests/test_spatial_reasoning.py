@@ -132,6 +132,25 @@ def test_on_top_of_uses_both_object_heights():
 
     assert result["target_pose"]["x"] == pytest.approx(0.30)
     assert result["target_pose"]["z"] == pytest.approx(0.073)
+    assert result["placement_mode"] == "supported_surface"
+    assert result["placement_safety"]["source_support_z_m"] == pytest.approx(-0.01)
+    assert result["placement_safety"]["minimum_object_bottom_z_m"] == pytest.approx(0.043)
+
+
+def test_on_top_of_uses_calibrated_source_support_for_release_height_invariant():
+    scene = SceneModel(objects=[
+        _object("apple_1", 0.40, 0.0, 0.065, dimensions=(0.08, 0.08, 0.10)),
+        _object("paper_1", 0.60, 0.0, 0.002, dimensions=(0.10, 0.10, 0.002)),
+    ])
+    result = RelativePlacePosePlanner(support_plane={
+        "frame": "base_link", "normal": {"x": 0.0, "y": 0.0, "z": 1.0}, "d": -0.004,
+    }).compute(
+        scene, source_id="apple_1", relation="on_top_of", reference_ids=["paper_1"],
+    )
+
+    assert result["placement_safety"]["source_support_z_m"] == pytest.approx(0.004)
+    assert result["placement_safety"]["minimum_object_bottom_z_m"] == pytest.approx(0.006)
+    assert result["placement_safety"]["support_height_strategy"] == "calibrated_plane"
 
 
 def test_right_of_uses_measured_point_cloud_footprints_with_conservative_height():

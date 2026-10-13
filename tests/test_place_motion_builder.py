@@ -107,3 +107,47 @@ def test_inside_lifts_release_pose_until_robotiq_contact_region_clears_rim():
 
     assert result["place_contact_pose"]["position"]["z"] == pytest.approx(0.12)
     assert result["inside_safety"]["release_pose_upward_adjustment_m"] == pytest.approx(0.01)
+
+
+def test_supported_surface_preserves_tool_height_above_pickup_support():
+    result = PlaceMotionBuilder(max_grasp_offset_m=0.30).build(
+        # The source pose is deliberately a visible-surface point rather than
+        # the apple's geometric centre; the old centre-offset transfer would
+        # produce tool z=0.280 and press the object into the support.
+        source_pose={"frame": "base_link", "x": 0.40, "y": 0.0, "z": 0.070},
+        target_pose={"frame": "base_link", "x": 0.60, "y": 0.0, "z": 0.053},
+        grasp_pose={
+            "frame": "base_link", "position": {"x": 0.40, "y": 0.0, "z": 0.297},
+            "orientation": {"x": 0.0, "y": 1.0, "z": 0.0, "w": 0.0},
+        },
+        placement_safety={
+            "mode": "supported_surface",
+            "source_support_z_m": 0.004,
+            "minimum_object_bottom_z_m": 0.003,
+            "source_height_m": 0.10,
+        },
+    )
+
+    assert result["place_contact_pose"]["position"]["z"] == pytest.approx(0.296)
+    assert result["placement_safety"]["source_tool_above_support_m"] == pytest.approx(0.293)
+    assert result["placement_safety"]["release_pose_upward_adjustment_m"] == pytest.approx(0.016)
+
+
+def test_supported_surface_never_lowers_an_already_conservative_release_pose():
+    result = PlaceMotionBuilder(max_grasp_offset_m=0.30).build(
+        source_pose={"frame": "base_link", "x": 0.40, "y": 0.0, "z": 0.05},
+        target_pose={"frame": "base_link", "x": 0.60, "y": 0.0, "z": 0.05},
+        grasp_pose={
+            "frame": "base_link", "position": {"x": 0.40, "y": 0.0, "z": 0.30},
+            "orientation": {"x": 0.0, "y": 1.0, "z": 0.0, "w": 0.0},
+        },
+        placement_safety={
+            "mode": "supported_surface",
+            "source_support_z_m": 0.0,
+            "minimum_object_bottom_z_m": -0.01,
+            "source_height_m": 0.04,
+        },
+    )
+
+    assert result["place_contact_pose"]["position"]["z"] == pytest.approx(0.30)
+    assert result["placement_safety"]["release_pose_upward_adjustment_m"] == 0.0
