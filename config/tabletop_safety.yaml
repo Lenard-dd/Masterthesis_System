@@ -22,6 +22,10 @@ tabletop_safety:
     # Fail closed when the localized object bottom disagrees strongly with
     # the calibrated support plane; this catches stale TF or bad dimensions.
     max_source_support_error_m: 0.03
+    # Release supported objects just above the measured destination surface.
+    # One millimetre avoids commanded compression while limiting free fall and
+    # bounce; the calibrated support plane and measured reference height own Z.
+    supported_surface_release_clearance_m: 0.001
 
   # Local point from MoveIt's tool0 to the Robotiq grasp/fingertip region.
   # 0.004 m tool0-to-mount + approximately 0.195 m gripper-base-to-contact.

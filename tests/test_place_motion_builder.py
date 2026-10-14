@@ -133,7 +133,7 @@ def test_supported_surface_preserves_tool_height_above_pickup_support():
     assert result["placement_safety"]["release_pose_upward_adjustment_m"] == pytest.approx(0.016)
 
 
-def test_supported_surface_never_lowers_an_already_conservative_release_pose():
+def test_supported_surface_replaces_center_offset_with_exact_safe_release_height():
     result = PlaceMotionBuilder(max_grasp_offset_m=0.30).build(
         source_pose={"frame": "base_link", "x": 0.40, "y": 0.0, "z": 0.05},
         target_pose={"frame": "base_link", "x": 0.60, "y": 0.0, "z": 0.05},
@@ -149,5 +149,7 @@ def test_supported_surface_never_lowers_an_already_conservative_release_pose():
         },
     )
 
-    assert result["place_contact_pose"]["position"]["z"] == pytest.approx(0.30)
+    assert result["place_contact_pose"]["position"]["z"] == pytest.approx(0.29)
     assert result["placement_safety"]["release_pose_upward_adjustment_m"] == 0.0
+    assert result["placement_safety"]["release_pose_downward_adjustment_m"] == pytest.approx(0.01)
+    assert result["placement_safety"]["release_pose_z_adjustment_m"] == pytest.approx(-0.01)

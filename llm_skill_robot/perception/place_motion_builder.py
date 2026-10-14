@@ -110,13 +110,20 @@ class PlaceMotionBuilder:
                 if tool_above_source_support <= 0.0:
                     raise PlaceMotionError("Reviewed grasp is not above the source support surface.")
                 minimum_tool_z = minimum_object_bottom + tool_above_source_support
-                upward_adjustment = max(0.0, minimum_tool_z - contact["position"]["z"])
-                contact["position"]["z"] += upward_adjustment
+                original_tool_z = contact["position"]["z"]
+                z_adjustment = minimum_tool_z - original_tool_z
+                # For a supported placement this support-relative height is
+                # the physical release target, not merely a lower bound. The
+                # old object-centre offset may be too high because RGB-D poses
+                # are visible-surface points rather than geometric centres.
+                contact["position"]["z"] = minimum_tool_z
                 placement_safety = {
                     **placement_safety,
                     "source_tool_above_support_m": tool_above_source_support,
                     "minimum_release_tool_z_m": minimum_tool_z,
-                    "release_pose_upward_adjustment_m": upward_adjustment,
+                    "release_pose_z_adjustment_m": z_adjustment,
+                    "release_pose_upward_adjustment_m": max(0.0, z_adjustment),
+                    "release_pose_downward_adjustment_m": max(0.0, -z_adjustment),
                     "release_tool_z_m": contact["position"]["z"],
                 }
             else:

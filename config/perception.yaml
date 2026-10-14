@@ -2,6 +2,11 @@ perception:
   mode: d435i_sam3
   detector: sam3_subprocess
   min_confidence_default: 0.5
+  # Keep SAM3's common candidate threshold permissive, then apply stricter
+  # query-class thresholds in the RGB-D backend. This avoids reducing recall
+  # for small screws and other classes when only nut detections need tuning.
+  class_confidence_thresholds:
+    nut: 0.70
   require_pose_for_pick: true
   target_frame: base_link
   require_base_link_pose_for_pick: true

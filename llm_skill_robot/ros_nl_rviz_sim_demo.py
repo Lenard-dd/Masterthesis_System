@@ -153,6 +153,9 @@ def _relative_place_support_kwargs() -> Dict[str, Any]:
         "max_source_support_error_m": float(
             policy.get("max_source_support_error_m", 0.03)
         ),
+        "supported_surface_release_clearance_m": float(
+            policy.get("supported_surface_release_clearance_m", 0.001)
+        ),
     }
 
 

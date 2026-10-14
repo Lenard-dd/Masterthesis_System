@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import threading
 import time
 from pathlib import Path
@@ -148,7 +149,12 @@ class D435iBackend(BasePerceptionBackend):
             min_confidence,
         )
         detector_status = detector_result.get("status", "FAILED")
-        detections = detector_result.get("detections", [])
+        raw_detections = detector_result.get("detections", [])
+        detections, applied_threshold, filtered_count = self._filter_detections_for_query(
+            query, raw_detections, min_confidence,
+        )
+        if detector_status == "SUCCESS" and raw_detections and not detections:
+            detector_status = "NOT_FOUND"
         capture_id = str(save_result.get("capture_id", ""))
         objects = self._detections_to_scene_objects(
             detections,
@@ -166,7 +172,11 @@ class D435iBackend(BasePerceptionBackend):
             query=query,
             status=detector_status,
             objects=objects,
-            message=f"{detector_result.get('message', '')} {self._debug_message(detector_status)}".strip(),
+            message=(
+                f"{detector_result.get('message', '')} "
+                f"Applied confidence threshold {applied_threshold:.2f}; filtered {filtered_count}. "
+                f"{self._debug_message(detector_status)}"
+            ).strip(),
             scene=self.latest_scene,
         )
 
@@ -216,8 +226,14 @@ class D435iBackend(BasePerceptionBackend):
         for raw_result in raw_query_results:
             query = str(raw_result.get("query", ""))
             detector_status = str(raw_result.get("status", "FAILED"))
+            raw_detections = raw_result.get("detections", [])
+            detections, applied_threshold, filtered_count = self._filter_detections_for_query(
+                query, raw_detections, min_confidence,
+            )
+            if detector_status == "SUCCESS" and raw_detections and not detections:
+                detector_status = "NOT_FOUND"
             query_objects = self._detections_to_scene_objects(
-                raw_result.get("detections", []),
+                detections,
                 snapshot=snapshot,
                 capture_id=capture_id,
                 rgb_image_path=str(save_result.get("path", "")),
@@ -232,6 +248,8 @@ class D435iBackend(BasePerceptionBackend):
                 "status": detector_status,
                 "message": str(raw_result.get("message", "")),
                 "object_count": len(query_objects),
+                "min_confidence_applied": applied_threshold,
+                "filtered_detection_count": filtered_count,
             })
 
         self.latest_scene = SceneModel(
@@ -269,6 +287,49 @@ class D435iBackend(BasePerceptionBackend):
 
     def get_scene(self) -> SceneModel:
         return self.latest_scene
+
+    def _filter_detections_for_query(
+        self, query: str, detections: Any, requested_threshold: float,
+    ) -> tuple[list[dict[str, Any]], float, int]:
+        """Apply a configurable class threshold without rerunning SAM3."""
+        threshold = self._class_confidence_threshold(query, requested_threshold)
+        if not isinstance(detections, list):
+            return [], threshold, 0
+        kept = [
+            detection for detection in detections
+            if isinstance(detection, dict)
+            and self._clamp_confidence(detection.get("confidence", 0.0)) >= threshold
+        ]
+        return kept, threshold, len(detections) - len(kept)
+
+    def _class_confidence_threshold(self, query: str, requested_threshold: float) -> float:
+        try:
+            threshold = self._clamp_confidence(requested_threshold)
+        except (TypeError, ValueError):
+            threshold = 0.0
+        configured = self.perception_config.get("class_confidence_thresholds", {})
+        if not isinstance(configured, dict):
+            return threshold
+        query_tokens = self._confidence_class_tokens(query)
+        for class_name, raw_threshold in configured.items():
+            class_tokens = self._confidence_class_tokens(str(class_name))
+            if not class_tokens or not class_tokens.issubset(query_tokens):
+                continue
+            try:
+                candidate = float(raw_threshold)
+            except (TypeError, ValueError):
+                continue
+            if 0.0 <= candidate <= 1.0:
+                threshold = max(threshold, candidate)
+        return threshold
+
+    @staticmethod
+    def _confidence_class_tokens(value: str) -> set[str]:
+        tokens = re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]+", str(value).casefold())
+        return {
+            token[:-1] if token.endswith("s") and len(token) > 3 and not token.endswith("ss") else token
+            for token in tokens
+        }
 
     @classmethod
     def _load_full_config(cls, config: dict | None) -> dict[str, Any]:

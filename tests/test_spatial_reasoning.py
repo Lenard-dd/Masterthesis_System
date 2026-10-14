@@ -131,10 +131,10 @@ def test_on_top_of_uses_both_object_heights():
     )
 
     assert result["target_pose"]["x"] == pytest.approx(0.30)
-    assert result["target_pose"]["z"] == pytest.approx(0.073)
+    assert result["target_pose"]["z"] == pytest.approx(0.071)
     assert result["placement_mode"] == "supported_surface"
     assert result["placement_safety"]["source_support_z_m"] == pytest.approx(-0.01)
-    assert result["placement_safety"]["minimum_object_bottom_z_m"] == pytest.approx(0.043)
+    assert result["placement_safety"]["minimum_object_bottom_z_m"] == pytest.approx(0.041)
 
 
 def test_on_top_of_uses_calibrated_source_support_for_release_height_invariant():
@@ -149,8 +149,34 @@ def test_on_top_of_uses_calibrated_source_support_for_release_height_invariant()
     )
 
     assert result["placement_safety"]["source_support_z_m"] == pytest.approx(0.004)
-    assert result["placement_safety"]["minimum_object_bottom_z_m"] == pytest.approx(0.006)
+    assert result["placement_safety"]["minimum_object_bottom_z_m"] == pytest.approx(0.004)
     assert result["placement_safety"]["support_height_strategy"] == "calibrated_plane"
+
+
+def test_on_top_of_live_rgbd_reference_uses_support_plus_measured_height_not_surface_pose_twice():
+    source = _object(
+        "apple_1", 0.40, 0.0, 0.065, dimensions=(0.08, 0.08, 0.10),
+    )
+    reference = _object(
+        # Live RGB-D pose is near the visible top surface, not the centre.
+        "white_cube_1", 0.60, 0.0, 0.053, dimensions=(0.049, 0.049, 0.049),
+    )
+    reference.metadata["height_estimation"] = {"usable": True, "height_m": 0.049}
+    result = RelativePlacePosePlanner(support_plane={
+        "frame": "base_link", "normal": {"x": 0.0, "y": 0.0, "z": 1.0}, "d": -0.004,
+    }).compute(
+        SceneModel(objects=[source, reference]),
+        source_id="apple_1", relation="on_top_of", reference_ids=["white_cube_1"],
+    )
+
+    # Reference top = 4 mm tabletop + 49 mm measured cube height. The old
+    # surface-as-centre formula would have produced 77.5 mm before clearance.
+    assert result["assumptions"]["reference_top_z_m"] == pytest.approx(0.053)
+    assert result["placement_safety"]["minimum_object_bottom_z_m"] == pytest.approx(0.054)
+    assert result["target_pose"]["z"] == pytest.approx(0.104)
+    assert result["assumptions"]["support_height_strategy"] == (
+        "calibrated_plane_plus_measured_height"
+    )
 
 
 def test_right_of_uses_measured_point_cloud_footprints_with_conservative_height():

@@ -222,6 +222,76 @@ def test_detect_objects_uses_detector_multi_query_api_when_available():
     assert result["query_results"][1]["status"] == "NOT_FOUND"
 
 
+def test_detect_objects_applies_nut_threshold_without_raising_other_classes():
+    class MultiQueryDetector:
+        def detect_many(self, _image_path, _queries, _min_confidence):
+            return {
+                "status": "SUCCESS",
+                "query_results": [
+                    {
+                        "query": "metal nuts", "status": "SUCCESS", "message": "found",
+                        "detections": [
+                            {"label": "metal nuts", "confidence": 0.63, "metadata": {}},
+                            {"label": "metal nuts", "confidence": 0.93, "metadata": {}},
+                        ],
+                    },
+                    {
+                        "query": "screw", "status": "SUCCESS", "message": "found",
+                        "detections": [
+                            {"label": "screw", "confidence": 0.55, "metadata": {}},
+                        ],
+                    },
+                ],
+            }
+
+    backend = D435iBackend(
+        config={
+            "perception": {"class_confidence_thresholds": {"nut": 0.70}},
+            "d435i": {"wait_timeout_sec": 0.0},
+        },
+        detector_adapter=MultiQueryDetector(),
+    )
+    backend.latest_rgb_msg = object()
+    backend._save_latest_rgb_frame = Mock(return_value={
+        "status": "SUCCESS", "message": "saved",
+        "path": "data/perception_runtime/latest_rgb.png",
+    })
+
+    result = backend.detect_objects(["metal nuts", "screw"], min_confidence=0.5)
+
+    assert [item["confidence"] for item in result["objects"]] == [0.93, 0.55]
+    assert result["query_results"][0]["min_confidence_applied"] == 0.70
+    assert result["query_results"][0]["filtered_detection_count"] == 1
+    assert result["query_results"][1]["min_confidence_applied"] == 0.5
+    assert result["query_results"][1]["filtered_detection_count"] == 0
+
+
+def test_detect_object_reports_not_found_when_class_threshold_filters_every_candidate():
+    detector = Mock()
+    detector.detect.return_value = {
+        "status": "SUCCESS", "message": "detected",
+        "detections": [{"label": "nut", "confidence": 0.63, "metadata": {}}],
+    }
+    backend = D435iBackend(
+        config={
+            "perception": {"class_confidence_thresholds": {"nut": 0.70}},
+            "d435i": {"wait_timeout_sec": 0.0},
+        },
+        detector_adapter=detector,
+    )
+    backend.latest_rgb_msg = object()
+    backend._save_latest_rgb_frame = Mock(return_value={
+        "status": "SUCCESS", "message": "saved",
+        "path": "data/perception_runtime/latest_rgb.png",
+    })
+
+    result = backend.detect_object("nut", min_confidence=0.5)
+
+    assert result.status == "NOT_FOUND"
+    assert result.objects == []
+    assert "threshold 0.70" in result.message
+
+
 def test_detect_objects_preserves_multi_query_worker_failure():
     class FailedMultiQueryDetector:
         def detect_many(self, image_path, queries, min_confidence):

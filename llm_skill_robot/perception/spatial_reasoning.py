@@ -47,6 +47,7 @@ class RelativePlacePosePlanner:
         inside_wall_estimate_m: float = 0.008,
         inside_object_clearance_m: float = 0.006,
         inside_release_clearance_m: float = 0.040,
+        supported_surface_release_clearance_m: float = 0.001,
         support_plane: dict[str, Any] | None = None,
         flat_table_fallback: bool = True,
         max_source_support_error_m: float = 0.03,
@@ -64,6 +65,11 @@ class RelativePlacePosePlanner:
         self.inside_wall_estimate_m = float(inside_wall_estimate_m)
         self.inside_object_clearance_m = float(inside_object_clearance_m)
         self.inside_release_clearance_m = float(inside_release_clearance_m)
+        if supported_surface_release_clearance_m < 0.0:
+            raise ValueError("supported_surface_release_clearance_m must not be negative.")
+        self.supported_surface_release_clearance_m = float(
+            supported_surface_release_clearance_m
+        )
         self.support_plane = self._normalise_support_plane(support_plane)
         self.flat_table_fallback = bool(flat_table_fallback)
         if max_source_support_error_m <= 0.0:
@@ -114,7 +120,9 @@ class RelativePlacePosePlanner:
                 direction=1.0 if normalized_relation == "right_of" else -1.0,
             )
         elif normalized_relation == "on_top_of":
-            target = self._on_top_of(source_pose, source_size, reference_poses[0], reference_sizes[0])
+            target, support_assumptions = self._on_top_of(
+                source_pose, source_size, references[0], reference_poses[0], reference_sizes[0],
+            )
             placement_safety = self._supported_surface_safety(
                 source_pose, source_size, target,
             )
@@ -390,20 +398,44 @@ class RelativePlacePosePlanner:
         self,
         source_pose: ObjectPose,
         source_size: ObjectDimensions,
+        reference: SceneObject,
         reference_pose: ObjectPose,
         reference_size: ObjectDimensions,
-    ) -> ObjectPose:
-        return ObjectPose(
+    ) -> tuple[ObjectPose, dict[str, Any]]:
+        height_estimation = reference.metadata.get("height_estimation", {})
+        measured_height = isinstance(height_estimation, dict) and bool(
+            height_estimation.get("usable", False)
+        )
+        if self.support_plane is not None and measured_height:
+            reference_support_z = self._plane_z(reference_pose.x, reference_pose.y)
+            reference_top_z = (
+                reference_support_z
+                + reference_size.z / abs(self.support_plane["normal"][2])
+            )
+            top_strategy = "calibrated_plane_plus_measured_height"
+        else:
+            # Compatibility fallback for externally supplied scenes whose pose
+            # convention is a true geometric centre. Live RGB-D plans normally
+            # use the calibrated plane and point-cloud height branch above.
+            reference_support_z = reference_pose.z - reference_size.z / 2.0
+            reference_top_z = reference_pose.z + reference_size.z / 2.0
+            top_strategy = "localized_center_fallback"
+        target = ObjectPose(
             frame=source_pose.frame,
             x=reference_pose.x,
             y=reference_pose.y,
             z=(
-                reference_pose.z
-                + reference_size.z / 2.0
+                reference_top_z
                 + source_size.z / 2.0
-                + self.vertical_clearance_m
+                + self.supported_surface_release_clearance_m
             ),
         )
+        return target, {
+            "support_height_strategy": top_strategy,
+            "reference_support_z_m": reference_support_z,
+            "reference_top_z_m": reference_top_z,
+            "supported_surface_release_clearance_m": self.supported_surface_release_clearance_m,
+        }
 
     def _supported_surface_safety(
         self,
@@ -434,7 +466,7 @@ class RelativePlacePosePlanner:
             "minimum_object_bottom_z_m": target_pose.z - source_size.z / 2.0,
             "source_height_m": source_size.z,
             "support_height_strategy": support_strategy,
-            "release_clearance_m": self.vertical_clearance_m,
+            "release_clearance_m": self.supported_surface_release_clearance_m,
         }
 
     @staticmethod
