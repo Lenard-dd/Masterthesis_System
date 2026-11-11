@@ -1,48 +1,62 @@
-# 桌面 sparse 抓取策略
+# Tabletop sparse grasp strategy
 
-## 当前行为
+## Behavior
 
-`config/grasping.yaml` 的 `graspgenx_subprocess.strategy` 默认设为 `sparse`。
-项目扩展服务复用本机 GraspGenX 的 `run_graspmoe`，强制 OBB 分支使用
-`obb_density="sparse"`，同时返回扩散分支候选。不会自动切换到 dense。
+`config/grasping.yaml` selects `graspgenx_subprocess.strategy: sparse`.
+The project server reuses the installed GraspGenX `run_graspmoe`, forces
+`obb_density="sparse"`, and also returns diffusion candidates. It does not
+switch automatically to dense sampling.
 
-默认生成设置：
+Default settings:
 
-- 扩散采样数：200。
-- sparse 平面角度采样数：36；相对于物体点云包围盒顶面的高度偏移：`-2,0` cm。
-- 返回候选上限：100；其中最多为 sparse 保留 24 个名额，其余给扩散候选。
-- MoveIt 的有界筛选最多检查 30 个，其中优先为 sparse 保留最多 12 个名额。
-- 两个分支仍使用模型分数；后续已有的分数、位姿及运动检查继续生效。
-- sparse 候选使用完整姿态约束进行规划，避免姿态放宽后重新产生明显倾斜。
+- 200 diffusion samples; 36 sparse planar angles; height offset `0` cm
+  relative to the top face of the object point-cloud bounding box.
+- Requested top-k is 100; the server preserves all OBB candidates for
+  environment screening. The client applies the final sparse quota of 24
+  after feasibility checks; the raw server count can exceed the requested top-k.
+- Bounded MoveIt screening checks up to 30, reserving up to 12 for sparse.
+- Both branches retain model scores and existing pose, score and motion checks.
+- Sparse candidates use full orientation constraints to avoid introducing
+  substantial tilt through relaxed planning.
 
-`-2,0` 是候选采样高度，不是已校准的闭爪深度。低矮物体的可用高度需要通过
-预览和实验判断；本次没有新增环境点云碰撞过滤。
+The height offsets are sampling settings, not calibrated closing depths.
+The current runner checks the open gripper mesh and closed-finger surface
+against the environment cloud. For sparse candidates, constrained generation
+searches backoff from 25 to 50 mm in 2.5 mm steps and checks target contact
+support and the local support plane. These checks supplement tabletop-envelope
+and MoveIt checks; they do not establish collision safety for unobserved geometry.
+Inspect candidate clearance, contact depth and the final trajectory in RViz.
 
-## 坐标关系
+The old `-2,0` cm sampling setting is no longer used: the negative layer could
+place grasps inside the tabletop for thin objects. The legacy single-pose
+collision path remains available when constrained generation is disabled.
 
-支持上下文的生成入口通过现有 `TFPoseTransformer` 将目标点云从其原始 frame
-转换到 `base_link`，保存单独的 PLY。生成成功后同步更新用于候选定位的
-frame、中心点和平面主轴。原始相机 PLY 保留。
+## Frames and limitations
 
-runner 对新点云去中心化，模型返回的候选由已有定位流程恢复到 `base_link`。
-随后沿用原有 grasp-frame → tool0 偏置，避免重复添加中心点或工具长度。
+Context-aware generation uses `TFPoseTransformer` to transform the object cloud
+into `base_link` and saves a separate PLY, preserving the original camera PLY.
+It updates the candidate frame, centroid and planar principal axis together.
+The runner centers the new cloud; existing localization restores candidates to
+`base_link`, followed by the configured grasp-frame-to-tool0 offset. Do not add
+the centroid or tool length a second time.
 
-此版本按 `base_link` 的 +Z 定义竖直方向，适用于当前机器人底座安装于桌面的
-工位。它没有单独旋转到配置的实测桌面法线；桌面明显倾斜时需要扩展此转换。
-TF 使用现有工具的最新变换，因此采集点云到生成候选期间应保持机械臂静止。
-这不是图像时间戳同步或手眼标定的实现。
+Vertical means base-frame +Z. The implementation assumes the current tabletop
+robot mounting; it does not rotate into the measured tabletop normal. A tilted
+table needs an extended transform. TF uses the latest available transform, so
+keep the arm stationary between cloud capture and generation. This is not
+image-timestamp synchronization or hand-eye calibration.
 
-没有点云 frame、TF 不可用或转换失败时，会明确报告并使用原扩散路径。
-仍使用旧版服务时，也会报告 `diffusion fallback`。模型推理错误不会伪装成
-成功或静默切换到 mock。
+Missing frame/TF or failed conversion reports a diffusion fallback. An older
+server also reports fallback. Model errors are not treated as successful
+inference and do not silently switch to mock observations.
 
-## 启动
+## Startup
 
-GUI 的源配置 `hitl_gui/config/gui_config.yaml` 已指向新服务脚本；重启 GUI
-及它管理的 GraspGenX 服务后生效。若从安装目录加载配置，应先按原方式重新
-构建 `llm_skill_robot`、`hitl_gui` 并 source 工作区。已经运行的旧服务不会热更新。
+The GUI configuration points to the project server. Rebuild/source both packages
+if using installed configuration, then restart the GUI and its GraspGenX server.
+Already-running servers do not hot-reload code.
 
-手动启动时，在原 GraspGenX 环境内运行：
+For an isolated manual diagnostic in the existing GraspGenX environment:
 
 ```bash
 conda activate graspgenx
@@ -54,24 +68,23 @@ python /home/lenard/dev_ws/src/LLM_Ros/scripts/graspgenx_sparse_server.py \
   --port 5556
 ```
 
-使用同一端口时只运行一个服务。仍沿用现有 SAM3 / GraspGenX GPU 交接流程。
-没有 TF 上下文的旧宽度测试等入口会继续请求扩散模式。
+Adjust paths on another workstation. Run only one server on the port and retain
+the GUI's SAM3/GraspGenX GPU handoff. Older diagnostic entry points without TF
+context, such as the width test, continue to request diffusion.
 
-## 首轮验证
+## Validation and rollback
 
-1. 先用原有 GUI 预览或 `ros2 run llm_skill_robot ros-graspgenx-plan-only-demo`。
-2. 确认生成消息包含 `strategy=sparse`。若出现 fallback，检查服务版本和 TF。
-3. 候选的 `metadata.generation_branch` 区分 `obb_sparse` 和 `diffusion`。
-   sparse 候选的接近轴应接近 `base_link` 的 `[0,0,-1]`。
-4. 检查物体点云和候选在 RViz 中的位置一致，夹爪宽度、抓取深度和姿态合理。
-5. 测试时记录物体尺寸、最终候选来源/分数、是否可达及预览中的关节运动量。
+1. Start with GUI preview or `ros2 run llm_skill_robot ros-graspgenx-plan-only-demo`.
+2. Check for `strategy=sparse`; investigate TF and server version on fallback.
+3. Inspect `metadata.generation_branch` (`obb_sparse` or `diffusion`). Sparse
+   approach axes should be close to base-frame `[0, 0, -1]`.
+4. In RViz, check cloud/candidate alignment, jaw width, depth and orientation.
+5. Record object dimensions, candidate branch/score, reachability and joint motion.
 
-## 回退
+To roll back, set `graspgenx_subprocess.strategy: diffusion` and restart the
+application reading that configuration. The extended server supports standard
+`infer`, so it can remain in use, or use the upstream server.
 
-将 `graspgenx_subprocess.strategy` 改为 `diffusion` 并重启读取该配置的应用。
-扩展服务仍支持标准 `infer`，因此回退不要求更换服务。也可以使用官方原服务。
-
-## 验证范围
-
-单元测试覆盖参数解析、旧服务回退、候选名额、点云旋转与中心点恢复、标准
-服务动作兼容；没有将 mock 模型测试当成真实模型质量或实机抓取成功的证据。
+Unit tests cover argument parsing, old-server fallback, branch quotas, cloud
+rotation/centroid restoration and standard server actions. Mock tests do not
+establish real model quality or physical grasp success.

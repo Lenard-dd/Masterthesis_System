@@ -1,5 +1,6 @@
 """Utility functions for resolving project paths."""
 
+import os
 from pathlib import Path
 
 
@@ -50,7 +51,16 @@ def get_project_root() -> Path:
 
 
 def get_config_dir() -> Path:
-    """Get the config directory path."""
+    """Use an explicit workstation configuration directory, then package defaults.
+
+    An invalid override fails rather than silently loading another robot's limits.
+    """
+    override = os.environ.get("LLM_SKILL_CONFIG_DIR")
+    if override:
+        config_dir = Path(override).expanduser().resolve()
+        if not config_dir.is_dir():
+            raise FileNotFoundError(f"LLM_SKILL_CONFIG_DIR is not a directory: {config_dir}")
+        return config_dir
     for root in _candidate_project_roots():
         config_dir = root / "config"
         if config_dir.is_dir():

@@ -3,7 +3,7 @@ import sys
 from llm_skill_robot.perception.d435i_backend import D435iBackend
 from llm_skill_robot.perception.object_pose_estimator import ObjectPoseEstimator
 from llm_skill_robot.perception.perception_backend_base import BasePerceptionBackend
-from llm_skill_robot.perception.sam3_adapter import SAM3Adapter
+from llm_skill_robot.perception.sam3_subprocess_adapter import SAM3SubprocessAdapter
 from llm_skill_robot.perception.scene_model import SceneModel
 from llm_skill_robot.perception.unavailable_perception_backend import (
     NOT_AVAILABLE_MESSAGE,
@@ -43,9 +43,9 @@ def test_frame_and_camera_methods_return_not_available():
     assert backend.get_camera_info()["status"] == "NOT_AVAILABLE"
 
 
-def test_future_backend_modules_import_without_real_hardware_dependencies():
+def test_backend_modules_import_without_model_dependencies():
     assert D435iBackend is not None
-    assert SAM3Adapter is not None
+    assert SAM3SubprocessAdapter is not None
     assert ObjectPoseEstimator is not None
     assert "pyrealsense2" not in sys.modules
     assert "sam3" not in sys.modules

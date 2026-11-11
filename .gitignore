@@ -20,3 +20,8 @@ env/
 .DS_Store
 dist/
 /docs/thesis_project_summary/
+
+# Generated perception and grasp artifacts
+/data/perception_runtime/
+/data/perception_outputs/
+/data/grasping/

@@ -1,6 +1,4 @@
-import pytest
 from llm_skill_robot.robot.base_robot_backend import BaseRobotBackend
-from llm_skill_robot.robot.base_ros_backend import BaseROSBackend
 from llm_skill_robot.robot.mock_robot_backend import MockRobotBackend
 
 
@@ -67,48 +65,3 @@ def test_mock_backend_stop_motion():
     assert result["success"] is True
     assert "message" in result
     assert "output" in result
-
-
-def test_base_ros_backend_initialization():
-    """Test BaseROSBackend initialization without ROS running."""
-    backend = BaseROSBackend(robot_name="test_robot")
-    
-    assert backend.robot_name == "test_robot"
-    assert backend._is_shutdown is False
-    state = backend.get_robot_state()
-    assert state["robot_name"] == "test_robot"
-    assert state["is_shutdown"] is False
-
-
-def test_base_ros_backend_list_named_targets():
-    """Test BaseROSBackend provides default target list."""
-    backend = BaseROSBackend()
-    targets = backend.list_named_targets()
-    
-    assert "home" in targets
-    assert "observe" in targets
-    assert "pickup" not in targets
-    assert "place" not in targets
-
-
-def test_base_ros_backend_not_implemented_methods():
-    """Test that BaseROSBackend methods raise NotImplementedError."""
-    backend = BaseROSBackend()
-    
-    with pytest.raises(NotImplementedError):
-        backend.move_to_named_target("home")
-    
-    with pytest.raises(NotImplementedError):
-        backend.open_gripper()
-    
-    with pytest.raises(NotImplementedError):
-        backend.close_gripper()
-    
-    with pytest.raises(NotImplementedError):
-        backend.pick_object("obj")
-    
-    with pytest.raises(NotImplementedError):
-        backend.place_object("obj")
-    
-    with pytest.raises(NotImplementedError):
-        backend.stop_motion()

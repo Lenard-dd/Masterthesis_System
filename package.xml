@@ -3,9 +3,13 @@
   <name>llm_skill_robot</name>
   <version>0.1.0</version>
   <description>LLM-based skill composition and human-in-the-loop validation system for UR5 robot.</description>
-  <maintainer email="your.email@example.com">Your Name</maintainer>
+  <maintainer email="zhufeng.que@rwth-aachen.de">Zhufeng Que</maintainer>
   <license>MIT</license>
 
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>moveit_msgs</exec_depend>
+  <exec_depend>trajectory_msgs</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>action_msgs</exec_depend>
   <exec_depend>control_msgs</exec_depend>

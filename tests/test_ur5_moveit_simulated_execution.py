@@ -431,7 +431,28 @@ def test_extract_joint_trajectory_from_display_trajectory_first_trajectory():
     assert result.source == "cached_plan.display_trajectory.trajectory[0].joint_trajectory"
 
 
-def test_extract_joint_trajectory_converts_supported_dict_to_message():
+def test_extract_joint_trajectory_converts_supported_dict_to_message(monkeypatch):
+    import sys
+    import types
+
+    # This unit test checks conversion, not ROS message installation. Isolate
+    # the message types from other tests' mocked ROS packages during collection.
+    class JointTrajectory:
+        def __init__(self):
+            self.joint_names = []
+            self.points = []
+
+    class JointTrajectoryPoint:
+        pass
+
+    package = types.ModuleType("trajectory_msgs")
+    messages = types.ModuleType("trajectory_msgs.msg")
+    messages.JointTrajectory = JointTrajectory
+    messages.JointTrajectoryPoint = JointTrajectoryPoint
+    package.msg = messages
+    monkeypatch.setitem(sys.modules, "trajectory_msgs", package)
+    monkeypatch.setitem(sys.modules, "trajectory_msgs.msg", messages)
+
     backend = UR5MoveItPlanBackend(dry_run=True)
     summary = MotionPlanSummary(
         plan_id="plan_dict_traj",
@@ -456,6 +477,7 @@ def test_extract_joint_trajectory_converts_supported_dict_to_message():
     assert result.joint_trajectory is not None
     assert not isinstance(result.joint_trajectory, dict)
     assert result.joint_trajectory.joint_names == ["joint_1"]
+    assert result.joint_trajectory.points[0].positions == [0.0]
 
 
 def test_extract_joint_trajectory_rejects_invalid_dict():

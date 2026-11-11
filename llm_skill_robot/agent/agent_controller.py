@@ -93,7 +93,7 @@ class AgentController:
 
     # Deterministic multilingual intent aliases form a safety boundary before
     # the LLM chooses a tool.  Keep action-specific aliases separate so a
-    # phrase such as "闭合夹具" can never be routed to ``open_gripper``.
+    # Chinese phrase meaning "close the gripper" cannot select ``open_gripper``.
     _PICK_TERMS = (
         "pick", "grasp", "lift", "take", "抓取", "拿起", "拾取", "夹取",
         "抓住", "抓起", "つかむ", "持ち上げる", "greifen", "aufheben",
